@@ -1,0 +1,13 @@
+# Development dependencies for testing
+
+# Testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0  # For testing async functions
+pytest-cov>=4.1.0       # Code coverage reports
+pytest-mock>=3.11.0     # Mocking support
+
+# Test database
+pytest-sqlite>=0.1.0    # SQLite fixtures
+
+# Assertion helpers
+freezegun>=1.2.0        # Mock datetime for consistent tests
