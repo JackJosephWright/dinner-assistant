@@ -98,19 +98,30 @@ class MealPlanningAssistant:
 
         return result
 
-    def create_shopping_list(self, meal_plan_id: str):
+    def create_shopping_list(
+        self,
+        meal_plan_id: str,
+        scaling_instructions: Optional[str] = None
+    ):
         """
         Create a shopping list from a meal plan.
 
         Args:
             meal_plan_id: ID of the meal plan
+            scaling_instructions: Optional natural language instructions for scaling
+                                 specific recipes (e.g., "double the Italian sandwiches")
 
         Returns:
             Shopping list result dictionary
         """
         logger.info(f"Creating shopping list for meal plan {meal_plan_id}")
+        if scaling_instructions:
+            logger.info(f"Scaling instructions: {scaling_instructions}")
 
-        result = self.shopping_agent.create_grocery_list(meal_plan_id)
+        result = self.shopping_agent.create_grocery_list(
+            meal_plan_id,
+            scaling_instructions=scaling_instructions
+        )
 
         if result["success"]:
             # Print formatted list

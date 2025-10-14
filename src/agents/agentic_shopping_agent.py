@@ -40,6 +40,9 @@ class ShoppingState(TypedDict):
     # Final grocery list
     grocery_list_id: Optional[str]
 
+    # Optional scaling/modification instructions (natural language)
+    scaling_instructions: Optional[str]
+
     # Error handling
     error: Optional[str]
 
@@ -91,12 +94,18 @@ class AgenticShoppingAgent:
 
         return workflow.compile()
 
-    def create_grocery_list(self, meal_plan_id: str) -> Dict[str, Any]:
+    def create_grocery_list(
+        self,
+        meal_plan_id: str,
+        scaling_instructions: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Create a grocery list from a meal plan using LLM reasoning.
 
         Args:
             meal_plan_id: ID of the meal plan
+            scaling_instructions: Optional natural language instructions for scaling
+                                 specific recipes (e.g., "double the Italian sandwiches")
 
         Returns:
             Dictionary with grocery list results
@@ -117,6 +126,7 @@ class AgenticShoppingAgent:
                 raw_ingredients=[],
                 consolidated_items=[],
                 grocery_list_id=None,
+                scaling_instructions=scaling_instructions,
                 error=None,
             )
 
@@ -195,6 +205,7 @@ class AgenticShoppingAgent:
         - Merging similar ingredients (e.g., "2 cups flour" + "1 cup flour" = "3 cups flour")
         - Categorizing by store section
         - Handling different units intelligently
+        - Applying scaling instructions (e.g., "double the Italian sandwiches")
         """
         try:
             raw_ingredients = state["raw_ingredients"]
@@ -208,11 +219,26 @@ class AgenticShoppingAgent:
             for i, item in enumerate(raw_ingredients, 1):
                 ingredients_text += f"{i}. {item['ingredient']} (from: {item['recipe']})\n"
 
+            # Check for scaling instructions
+            scaling_instructions = state.get("scaling_instructions", "")
+            scaling_note = ""
+            if scaling_instructions:
+                scaling_note = f"""
+
+**IMPORTANT SCALING INSTRUCTIONS:**
+{scaling_instructions}
+
+Please apply these scaling instructions to the relevant recipes when consolidating.
+For example, if asked to "double the Italian sandwiches", multiply all ingredient
+quantities from that recipe by 2 before consolidating with other ingredients.
+"""
+
             # Ask LLM to consolidate
             prompt = f"""You are a grocery shopping assistant. I have a list of ingredients from multiple recipes that need to be consolidated into a smart shopping list.
 
 Ingredients:
 {ingredients_text}
+{scaling_note}
 
 Please consolidate these ingredients by:
 

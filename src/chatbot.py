@@ -99,13 +99,17 @@ Be conversational, friendly, and helpful. Keep responses concise but informative
             },
             {
                 "name": "create_shopping_list",
-                "description": "Create a consolidated shopping list from the current meal plan. Organizes ingredients by store section.",
+                "description": "Create a consolidated shopping list from the current meal plan. Organizes ingredients by store section. Can apply scaling instructions to specific recipes.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "meal_plan_id": {
                             "type": "string",
                             "description": "ID of the meal plan (use current if available)",
+                        },
+                        "scaling_instructions": {
+                            "type": "string",
+                            "description": "Optional natural language instructions for scaling specific recipes (e.g., 'double the Italian sandwiches', 'triple the chicken for meal prep', 'reduce pasta by half')",
                         },
                     },
                     "required": ["meal_plan_id"],
@@ -226,10 +230,15 @@ Be conversational, friendly, and helpful. Keep responses concise but informative
                 if not meal_plan_id:
                     return "Error: No meal plan available. Please plan meals first."
 
-                result = self.assistant.create_shopping_list(meal_plan_id)
+                scaling_instructions = tool_input.get("scaling_instructions")
+                result = self.assistant.create_shopping_list(
+                    meal_plan_id,
+                    scaling_instructions=scaling_instructions
+                )
                 if result["success"]:
                     self.current_shopping_list_id = result["grocery_list_id"]
-                    return f"Created shopping list with {result['num_items']} items, organized by store section."
+                    scaling_note = f" (with scaling: {scaling_instructions})" if scaling_instructions else ""
+                    return f"Created shopping list with {result['num_items']} items, organized by store section{scaling_note}."
                 else:
                     return f"Error: {result.get('error')}"
 
