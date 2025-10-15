@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}Shopping List - Meal Planning Assistant{% endblock %}
+
+{% block content %}
+<div class="px-4 py-6 sm:px-0">
+    <div class="mb-6">
+        <h1 class="text-3xl font-bold text-gray-900">
+            <i class="fas fa-shopping-cart text-green-600"></i> Shopping List
+        </h1>
+        <p class="mt-2 text-gray-600">
+            {% if api_key_available %}
+            Chat to create and modify your shopping list, then check items off as you shop.
+            {% else %}
+            Create shopping lists from your meal plans.
+            {% endif %}
+        </p>
+    </div>
+
+    {% if not meal_plan_id %}
+    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+        <div class="flex">
+            <div class="flex-shrink-0">
+                <i class="fas fa-exclamation-triangle text-yellow-400"></i>
+            </div>
+            <div class="ml-3">
+                <p class="text-sm text-yellow-700">
+                    <strong>No meal plan found.</strong> Please <a href="/plan" class="underline font-semibold">create a meal plan</a> first.
+                </p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Chat Interface -->
+    <div class="bg-white shadow-lg rounded-lg mb-6">
+        <!-- Chat Header -->
+        <div class="p-4 border-b bg-gradient-to-r from-green-50 to-emerald-50">
+            <div class="flex items-center">
+                <div class="w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full flex items-center justify-center">
+                    <i class="fas fa-robot text-white"></i>
+                </div>
+                <div class="ml-3">
+                    <h2 class="text-lg font-semibold text-gray-900">💬 Chat with Shopping Assistant</h2>
+                    <p class="text-sm text-gray-600">
+                        {% if api_key_available %}
+                        <i class="fas fa-circle text-green-500 text-xs"></i> AI Powered
+                        {% else %}
+                        <i class="fas fa-circle text-yellow-500 text-xs"></i> Basic Mode
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Messages -->
+        <div id="chatMessages" class="h-96 overflow-y-auto bg-gray-50 p-4 space-y-4">
+            <!-- Welcome Message -->
+            <div class="flex items-start">
+                <div class="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full flex items-center justify-center flex-shrink-0">
+                    <i class="fas fa-robot text-white text-sm"></i>
+                </div>
+                <div class="ml-3 bg-white rounded-lg shadow p-4 max-w-2xl">
+                    <p class="text-gray-800">🛒 Hi! I can help you create and modify your shopping list.</p>
+                    <p class="text-gray-800 mt-2">Try saying:</p>
+                    <ul class="list-disc list-inside text-gray-700 mt-2 space-y-1 text-sm">
+                        <li>"Create shopping list"</li>
+                        <li>"Double the Italian sandwiches"</li>
+                        <li>"Add bananas and milk"</li>
+                        <li>"Remove all dairy items"</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Input -->
+        <div class="border-t p-4">
+            <form id="chatForm">
+                <div class="flex gap-2">
+                    <input
+                        type="text"
+                        id="messageInput"
+                        placeholder="Type your message... (e.g., 'create shopping list')"
+                        class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                        {% if not api_key_available %}disabled{% endif %}
+                    >
+                    <button
+                        type="submit"
+                        id="sendButton"
+                        class="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:bg-gray-400"
+                        {% if not api_key_available %}disabled{% endif %}
+                    >
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+                {% if not api_key_available %}
+                <p class="text-xs text-yellow-700 mt-2">
+                    <i class="fas fa-exclamation-triangle"></i> Chat requires API key. Set ANTHROPIC_API_KEY to enable AI features.
+                </p>
+                {% endif %}
+            </form>
+        </div>
+    </div>
+
+    <!-- Quick Actions Bar -->
+    <div class="bg-white shadow rounded-lg p-4 mb-6 flex flex-wrap gap-2 justify-between items-center">
+        <div class="flex gap-2">
+            <button onclick="printList()" class="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors">
+                <i class="fas fa-print"></i> Print
+            </button>
+            <button onclick="checkAll()" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors">
+                <i class="fas fa-check-double"></i> Check All
+            </button>
+            <button onclick="uncheckAll()" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors">
+                <i class="fas fa-times"></i> Uncheck All
+            </button>
+        </div>
+        <div class="text-sm text-gray-600">
+            <span id="itemCount">{{ current_list['items']|length if current_list else 0 }}</span> items
+        </div>
+    </div>
+
+    <!-- Shopping List Display -->
+    <div class="bg-white shadow-lg rounded-lg p-6">
+        <h2 class="text-xl font-semibold mb-4">
+            <i class="fas fa-clipboard-list"></i> Items by Section
+        </h2>
+
+        <div id="shoppingListContainer">
+            {% if current_list %}
+                <div id="shoppingList">
+                    <div class="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                        <p class="text-sm text-green-800">
+                            <i class="fas fa-check-circle"></i> Shopping list for week of {{ current_list.week_of }}
+                            <span class="ml-2 font-semibold">{{ current_list['items']|length }} items</span>
+                        </p>
+                    </div>
+
+                    {% for section, items in current_list.store_sections.items() %}
+                    <div class="mb-6">
+                        <h3 class="text-lg font-semibold text-gray-900 mb-3 pb-2 border-b-2 border-gray-200 uppercase tracking-wide">
+                            <i class="fas fa-tag text-gray-500"></i> {{ section }}
+                        </h3>
+                        <div class="space-y-2">
+                            {% for item in items %}
+                            <div class="flex items-start p-3 hover:bg-gray-50 rounded-md transition-colors">
+                                <input type="checkbox" class="mt-1 h-5 w-5 text-green-600 rounded border-gray-300 focus:ring-green-500">
+                                <div class="ml-3 flex-1">
+                                    <div class="font-medium text-gray-900">{{ item.name }}</div>
+                                    <div class="text-sm text-gray-600">{{ item.quantity }}</div>
+                                    {% if item.recipe_sources %}
+                                    <div class="text-xs text-gray-500 mt-1">
+                                        <i class="fas fa-utensils"></i> {{ item.recipe_sources|join(', ') }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div id="emptyState" class="text-center py-12">
+                    <i class="fas fa-shopping-basket text-6xl text-gray-300 mb-4"></i>
+                    <h3 class="text-lg font-medium text-gray-900 mb-2">No Shopping List Yet</h3>
+                    <p class="text-gray-500">
+                        {% if meal_plan_id %}
+                        Chat: "Create shopping list" to generate your list from your meal plan.
+                        {% else %}
+                        Create a meal plan first, then return here to generate your shopping list.
+                        {% endif %}
+                    </p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.spinner {
+    animation: spin 1s linear infinite;
+}
+
+/* Print styles */
+@media print {
+    nav, footer, #chatMessages, #messageInput, #sendButton, .no-print {
+        display: none !important;
+    }
+    .bg-white {
+        box-shadow: none !important;
+    }
+}
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Chat functionality
+let chatHistory = [];
+
+document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const input = document.getElementById('messageInput');
+    const sendButton = document.getElementById('sendButton');
+    const message = input.value.trim();
+
+    if (!message) return;
+
+    // Disable input while processing
+    input.disabled = true;
+    sendButton.disabled = true;
+
+    // Add user message to chat
+    addMessage(message, 'user');
+    input.value = '';
+
+    // Scroll to bottom
+    scrollToBottom();
+
+    try {
+        // Send to API
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Add assistant response
+            addMessage(result.response, 'assistant');
+
+            // If shopping list was created/updated, reload to show it
+            if (result.shopping_list_id) {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1500);
+            }
+        } else {
+            addMessage('Error: ' + result.error, 'error');
+        }
+    } catch (error) {
+        addMessage('Error sending message: ' + error.message, 'error');
+    } finally {
+        input.disabled = false;
+        sendButton.disabled = false;
+        input.focus();
+        scrollToBottom();
+    }
+});
+
+function addMessage(text, type) {
+    const messagesContainer = document.getElementById('chatMessages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'flex items-start';
+
+    if (type === 'user') {
+        messageDiv.innerHTML = `
+            <div class="flex items-start ml-auto">
+                <div class="bg-green-600 text-white rounded-lg shadow p-4 max-w-2xl">
+                    <p class="text-white">${escapeHtml(text)}</p>
+                </div>
+                <div class="w-8 h-8 bg-gray-600 rounded-full flex items-center justify-center ml-3 flex-shrink-0">
+                    <i class="fas fa-user text-white text-sm"></i>
+                </div>
+            </div>
+        `;
+    } else if (type === 'error') {
+        messageDiv.innerHTML = `
+            <div class="w-8 h-8 bg-red-500 rounded-full flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-exclamation-triangle text-white text-sm"></i>
+            </div>
+            <div class="ml-3 bg-red-50 border border-red-200 rounded-lg shadow p-4 max-w-2xl">
+                <p class="text-red-800">${escapeHtml(text)}</p>
+            </div>
+        `;
+    } else {
+        // Assistant message
+        messageDiv.innerHTML = `
+            <div class="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-robot text-white text-sm"></i>
+            </div>
+            <div class="ml-3 bg-white rounded-lg shadow p-4 max-w-2xl">
+                <p class="text-gray-800">${formatMessage(text)}</p>
+            </div>
+        `;
+    }
+
+    messagesContainer.appendChild(messageDiv);
+    chatHistory.push({ text, type });
+}
+
+function formatMessage(text) {
+    // Convert markdown-style formatting
+    text = escapeHtml(text);
+    text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    text = text.replace(/\n/g, '<br>');
+    return text;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function scrollToBottom() {
+    const container = document.getElementById('chatMessages');
+    container.scrollTop = container.scrollHeight;
+}
+
+// Quick actions
+function printList() {
+    window.print();
+}
+
+function checkAll() {
+    document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+}
+
+function uncheckAll() {
+    document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+}
+
+// Update item count when checkboxes change
+document.addEventListener('change', (e) => {
+    if (e.target.type === 'checkbox') {
+        const checked = document.querySelectorAll('input[type="checkbox"]:checked').length;
+        const total = document.querySelectorAll('input[type="checkbox"]').length;
+        // Could add checked/total display here
+    }
+});
+</script>
+{% endblock %}

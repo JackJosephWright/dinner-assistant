@@ -52,15 +52,17 @@ class PlanningState(TypedDict):
 class AgenticPlanningAgent:
     """LLM-powered agent for generating intelligent weekly meal plans."""
 
-    def __init__(self, db: DatabaseInterface, api_key: Optional[str] = None):
+    def __init__(self, db: DatabaseInterface, api_key: Optional[str] = None, progress_callback=None):
         """
         Initialize Planning Agent with LLM.
 
         Args:
             db: Database interface instance
             api_key: Anthropic API key (or from env)
+            progress_callback: Optional callback function for progress updates
         """
         self.db = db
+        self.progress_callback = progress_callback
 
         # Initialize Anthropic client
         api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -202,6 +204,10 @@ class AgenticPlanningAgent:
         The LLM reasons about user preferences from historical data.
         """
         try:
+            # Emit progress
+            if self.progress_callback:
+                self.progress_callback("Analyzing your meal preferences...")
+
             # Get meal history
             history = self.db.get_meal_history(weeks_back=8)
             recent_history = self.db.get_meal_history(weeks_back=2)
@@ -261,6 +267,10 @@ Be concise but insightful. Focus on actionable patterns for meal planning."""
         The LLM decides what to search for based on history analysis.
         """
         try:
+            # Emit progress
+            if self.progress_callback:
+                self.progress_callback("Searching for recipe candidates...")
+
             preferences = state["preferences"]
             history_summary = state.get("history_summary", "")
 
@@ -384,6 +394,10 @@ Keep keywords simple and searchable. Do NOT use complex phrases."""
         The LLM reasons about variety, balance, and preferences to make final selections.
         """
         try:
+            # Emit progress
+            if self.progress_callback:
+                self.progress_callback("Selecting the best meals for your week...")
+
             candidates = state["recipe_candidates"]
             num_days = state["num_days"]
             week_of = state["week_of"]
@@ -577,6 +591,10 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
                 else preferences.get("max_weeknight_time", 45)
             )
 
+            # Emit progress
+            if self.progress_callback:
+                self.progress_callback("Finding replacement options...")
+
             # Ask LLM to determine search queries for the replacement
             prompt = f"""You are a meal planning assistant. The user wants to swap a meal in their plan.
 
@@ -641,6 +659,10 @@ shellfish"""
                 if candidate["recipe_id"] not in seen_ids:
                     seen_ids.add(candidate["recipe_id"])
                     unique_candidates.append(candidate)
+
+            # Emit progress
+            if self.progress_callback:
+                self.progress_callback("Selecting best replacement...")
 
             # Ask LLM to pick the best one
             candidates_text = ""

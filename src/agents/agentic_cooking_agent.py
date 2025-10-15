@@ -98,6 +98,8 @@ class AgenticCookingAgent:
         """
         Get a complete cooking guide for a recipe using LLM reasoning.
 
+        Uses a cache to avoid regenerating guides for the same recipe.
+
         Args:
             recipe_id: Recipe ID
 
@@ -105,6 +107,15 @@ class AgenticCookingAgent:
             Cooking guide dictionary
         """
         try:
+            # Check cache first
+            cached_guide = self.db.get_cached_cooking_guide(recipe_id, self.model)
+            if cached_guide:
+                logger.info(f"Using cached cooking guide for recipe {recipe_id}")
+                return cached_guide
+
+            # Generate new guide
+            logger.info(f"Generating new cooking guide for recipe {recipe_id}")
+
             # Initialize state
             initial_state = CookingState(
                 recipe_id=recipe_id,
@@ -130,7 +141,7 @@ class AgenticCookingAgent:
                     "error": final_state["error"],
                 }
 
-            return {
+            guide = {
                 "success": True,
                 "recipe_name": final_state["recipe_name"],
                 "servings": final_state["servings"],
@@ -141,6 +152,11 @@ class AgenticCookingAgent:
                 "tips": final_state["cooking_tips"],
                 "timing_breakdown": final_state["timing_breakdown"],
             }
+
+            # Cache the guide for future use
+            self.db.save_cooking_guide(recipe_id, self.model, guide)
+
+            return guide
 
         except Exception as e:
             logger.error(f"Error getting cooking guide: {e}", exc_info=True)

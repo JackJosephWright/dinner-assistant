@@ -161,6 +161,22 @@ class DatabaseInterface:
                 )
             """)
 
+            # Cooking guides cache (stores LLM-generated cooking guides)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cooking_guides (
+                    recipe_id TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    guide_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (recipe_id, model_version)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cooking_guides_recipe
+                ON cooking_guides(recipe_id)
+            """)
+
             conn.commit()
             logger.info("User database initialized")
 
@@ -970,3 +986,59 @@ class DatabaseInterface:
         """
         profile = self.get_user_profile()
         return profile.onboarding_completed if profile else False
+
+    # ==================== Cooking Guides Cache ====================
+
+    def get_cached_cooking_guide(self, recipe_id: str, model_version: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a cached cooking guide for a recipe.
+
+        Args:
+            recipe_id: Recipe ID
+            model_version: Model version used to generate the guide
+
+        Returns:
+            Cached guide dictionary or None if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT guide_json FROM cooking_guides WHERE recipe_id = ? AND model_version = ?",
+                (recipe_id, model_version)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return json.loads(row["guide_json"])
+            return None
+
+    def save_cooking_guide(self, recipe_id: str, model_version: str, guide: Dict[str, Any]):
+        """
+        Save a cooking guide to the cache.
+
+        Args:
+            recipe_id: Recipe ID
+            model_version: Model version used to generate the guide
+            guide: Guide dictionary to cache
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO cooking_guides
+                (recipe_id, model_version, guide_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    recipe_id,
+                    model_version,
+                    json.dumps(guide),
+                    datetime.now().isoformat(),
+                )
+            )
+            conn.commit()
+
+        logger.info(f"Cached cooking guide for recipe {recipe_id}")

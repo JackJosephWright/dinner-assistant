@@ -74,7 +74,7 @@ For cooking help:
 - Use get_cooking_guide to provide instructions
 - Suggest substitutions when asked
 
-Be conversational, friendly, and helpful. Keep responses concise but informative."""
+IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy explanations. Confirm actions with 1-2 sentences max."""
 
     def get_tools(self) -> List[Dict[str, Any]]:
         """Define tools available to the LLM."""
@@ -340,7 +340,7 @@ Be conversational, friendly, and helpful. Keep responses concise but informative
         # Call Claude with tools
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=4096,
+            max_tokens=512,  # Reduced from 4096 for faster, more concise responses
             system=self.get_system_prompt(),
             tools=self.get_tools(),
             messages=self.conversation_history,
@@ -380,7 +380,7 @@ Be conversational, friendly, and helpful. Keep responses concise but informative
             # Get next response
             response = self.client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=4096,
+                max_tokens=512,  # Reduced from 4096 for faster, more concise responses
                 system=self.get_system_prompt(),
                 tools=self.get_tools(),
                 messages=self.conversation_history,

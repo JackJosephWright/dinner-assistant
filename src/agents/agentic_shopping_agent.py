@@ -233,44 +233,24 @@ For example, if asked to "double the Italian sandwiches", multiply all ingredien
 quantities from that recipe by 2 before consolidating with other ingredients.
 """
 
-            # Ask LLM to consolidate
-            prompt = f"""You are a grocery shopping assistant. I have a list of ingredients from multiple recipes that need to be consolidated into a smart shopping list.
+            # Ask LLM to consolidate (optimized: shorter prompt, fewer tokens)
+            prompt = f"""Consolidate these recipe ingredients into a shopping list:
 
-Ingredients:
-{ingredients_text}
-{scaling_note}
+{ingredients_text}{scaling_note}
 
-Please consolidate these ingredients by:
+Merge duplicates, normalize names, categorize by store section (produce/meat/seafood/dairy/pantry/frozen/bakery/other).
 
-1. **Merging duplicates**: Combine quantities when the same ingredient appears multiple times
-   - Example: "2 cups flour" + "1 cup flour" = "3 cups flour"
-   - Example: "1 lb chicken breast" + "1/2 lb chicken breast" = "1.5 lbs chicken breast"
-   - Handle fractions and different formats intelligently
-
-2. **Normalizing names**: Group similar items together
-   - Example: "diced tomatoes" and "tomatoes, diced" are the same
-   - Example: "yellow onion" and "onion" can be grouped as "onions"
-
-3. **Categorizing by store section**: Assign each item to a grocery store section
-   - Sections: produce, meat, seafood, dairy, pantry, frozen, bakery, other
-   - Use logical categorization based on where items are typically found
-
-4. **Tracking recipe sources**: Note which recipes need each ingredient
-
-Please output the consolidated list in this EXACT format (one item per line):
-
+Output format (one per line):
 ITEM_NAME | QUANTITY | CATEGORY | RECIPES
 
 Example:
 flour | 3 cups | pantry | Pancakes, Cookies
-chicken breast | 1.5 lbs | meat | Stir Fry, Grilled Chicken
-onions | 2 medium | produce | Stir Fry, Pasta, Tacos
-
-Be smart about consolidation - if you can combine quantities, do it. If units don't match (like "2 cloves" and "1 bulb" of garlic), list separately or use your best judgment to consolidate."""
+chicken breast | 1.5 lbs | meat | Stir Fry
+onions | 2 medium | produce | Stir Fry, Pasta"""
 
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=2048,  # Reduced from 4096 for faster response
                 messages=[{"role": "user", "content": prompt}]
             )
 

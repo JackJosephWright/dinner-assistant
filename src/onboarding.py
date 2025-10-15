@@ -116,12 +116,15 @@ This will take about 2 minutes. Ready?
         """Step 1: Ask about household size."""
         if user_input is None:
             return """
-**Q1: How many people are you cooking for?**
+**Q1: Tell me about your household**
+
+How many adults and kids are you cooking for?
 
 Examples:
-- "4 people (2 adults, 2 kids)"
-- "Just me"
-- "2 adults"
+- "2 adults and 2 kids"
+- "Just me" (1 adult)
+- "2 adults, no kids"
+- "Family of 4 with 2 children"
 
 Your answer:
 """.strip()
