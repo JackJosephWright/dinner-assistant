@@ -567,8 +567,13 @@ def api_chat():
         # Set up progress callback for this session
         set_agent_progress_callback(session_id)
 
+        # Set progress callback for chatbot too
+        def chatbot_progress(msg: str):
+            emit_progress(session_id, msg)
+        chatbot_instance.progress_callback = chatbot_progress
+
         # Emit initial progress
-        emit_progress(session_id, "Processing your request...")
+        emit_progress(session_id, "💭 Understanding your request...")
 
         # Get AI response
         response = chatbot_instance.chat(message)
@@ -588,7 +593,7 @@ def api_chat():
                 logger.info(f"New meal plan created: {chatbot_instance.current_meal_plan_id}")
             else:
                 # Same meal plan - assume it was modified if user mentioned swap/change/replace
-                modification_keywords = ['swap', 'change', 'replace', 'modify', 'different']
+                modification_keywords = ['swap', 'change', 'replace', 'modify', 'different', 'switch', 'update', 'alter']
                 if any(keyword in message.lower() for keyword in modification_keywords):
                     plan_changed = True
                     logger.info(f"Detected modification request in message: '{message}' - assuming plan changed")
@@ -839,6 +844,31 @@ def api_preload_plan_data():
 
     except Exception as e:
         logger.error(f"Error preloading data: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/plan/clear', methods=['POST'])
+def api_clear_plan():
+    """Clear the current meal plan and shopping list from session."""
+    try:
+        # Clear meal plan and shopping list from session
+        had_meal_plan = 'meal_plan_id' in session
+        had_shopping_list = 'shopping_list_id' in session
+
+        session.pop('meal_plan_id', None)
+        session.pop('shopping_list_id', None)
+
+        logger.info("Cleared meal plan and shopping list from session")
+
+        return jsonify({
+            "success": True,
+            "message": "Plan cleared successfully",
+            "had_meal_plan": had_meal_plan,
+            "had_shopping_list": had_shopping_list,
+        })
+
+    except Exception as e:
+        logger.error(f"Error clearing plan: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 

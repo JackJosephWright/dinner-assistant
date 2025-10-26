@@ -5,7 +5,7 @@ Takes a meal plan and generates an organized shopping list.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from data.database import DatabaseInterface
 from mcp_server.tools.shopping_tools import ShoppingTools
@@ -27,12 +27,13 @@ class ShoppingAgent:
         self.tools = ShoppingTools(db)
         logger.info("Shopping Agent initialized")
 
-    def create_grocery_list(self, meal_plan_id: str) -> Dict[str, Any]:
+    def create_grocery_list(self, meal_plan_id: str, scaling_instructions: Optional[str] = None) -> Dict[str, Any]:
         """
         Create a grocery list from a meal plan.
 
         Args:
             meal_plan_id: ID of the meal plan
+            scaling_instructions: Optional scaling instructions (ignored by algorithmic agent)
 
         Returns:
             Dictionary with grocery list results

@@ -204,16 +204,37 @@
         </div>
     </div>
 
+    <!-- Week Ended Banner -->
+    <div id="weekEndedBanner" class="bg-gradient-to-r from-green-50 to-emerald-50 border-l-4 border-green-500 rounded-lg p-6 mb-6 hidden fade-in">
+        <div class="flex items-start justify-between">
+            <div class="flex items-start">
+                <div class="flex-shrink-0">
+                    <i class="fas fa-check-circle text-green-600 text-3xl"></i>
+                </div>
+                <div class="ml-4">
+                    <h3 class="text-xl font-bold text-gray-900">Week Complete!</h3>
+                    <p class="mt-1 text-gray-700">Your meal plan has ended. Ready to plan your next week?</p>
+                </div>
+            </div>
+            <button onclick="startNewWeek()" class="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 font-medium shadow-lg">
+                <i class="fas fa-calendar-plus"></i> Plan Next Week
+            </button>
+        </div>
+    </div>
+
     <!-- Meal Plan Display -->
     {% if current_plan %}
     <div id="mealPlanContainer" class="bg-white shadow-lg rounded-lg p-6 mb-6">
         <div id="mealPlanDisplay">
             <div class="flex items-center justify-between mb-4">
             <h2 class="text-2xl font-bold text-gray-900">
-                <i class="fas fa-list text-indigo-600"></i> This Week's Plan
+                <i class="fas fa-list text-indigo-600"></i> <span id="planTitle">This Week's Plan</span>
             </h2>
             <div class="flex items-center gap-3">
-                <span class="text-sm text-gray-600">Week of {{ current_plan.week_of }}</span>
+                <span class="text-sm text-gray-600" id="weekOfDisplay">Week of {{ current_plan.week_of }}</span>
+                <button onclick="clearPlan()" id="clearButton" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors flex items-center gap-2">
+                    <i class="fas fa-trash-alt"></i> Clear
+                </button>
                 <button onclick="replanMeals()" id="replanButton" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2">
                     <i class="fas fa-sync-alt"></i> Replan
                 </button>
@@ -901,39 +922,36 @@ document.getElementById('chatForm').addEventListener('submit', async (e) => {
                 // Fetch updated meal plan and update DOM
                 await updateMealPlanDisplay();
 
-                // ⚡ OPTIMIZATION: Auto-trigger background preload after plan creation
+                // ⚡ OPTIMIZATION: Auto-trigger background preload IMMEDIATELY after plan creation
                 // This prepares Shop & Cook data while user reviews the plan
-                console.log('⚡ Starting background preload of Shop & Cook data...');
-                console.log('⏰ Waiting 2 seconds before triggering preload...');
-                setTimeout(() => {
-                    console.log('🚀 Triggering /api/plan/preload now...');
-                    fetch('/api/plan/preload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' }
+                // No delay - start immediately so it's ready faster!
+                console.log('⚡ Starting background preload of Shop & Cook data NOW...');
+                fetch('/api/plan/preload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                })
+                    .then(res => {
+                        console.log('📡 Preload response status:', res.status);
+                        return res.json();
                     })
-                        .then(res => {
-                            console.log('📡 Preload response status:', res.status);
-                            return res.json();
-                        })
-                        .then(data => {
-                            console.log('📦 Preload data:', data);
-                            if (data.success) {
-                                console.log('✅ Background preload complete!', data);
-                                // Show subtle notification
-                                const toast = document.createElement('div');
-                                toast.className = 'fixed bottom-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm';
-                                toast.innerHTML = `<i class="fas fa-check-circle mr-2"></i> Shop & Cook tabs ready! (${data.recipes_preloaded || 0} recipes loaded)`;
-                                document.body.appendChild(toast);
-                                setTimeout(() => toast.remove(), 5000);
-                            } else {
-                                console.error('❌ Preload failed:', data.error);
-                            }
-                        })
-                        .catch(err => {
-                            console.error('💥 Background preload failed:', err);
-                            console.error('Error details:', err.message, err.stack);
-                        });
-                }, 2000); // Wait 2 seconds to let user start reading
+                    .then(data => {
+                        console.log('📦 Preload data:', data);
+                        if (data.success) {
+                            console.log('✅ Background preload complete!', data);
+                            // Show subtle notification
+                            const toast = document.createElement('div');
+                            toast.className = 'fixed bottom-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm';
+                            toast.innerHTML = `<i class="fas fa-check-circle mr-2"></i> Shop & Cook tabs ready! (${data.recipes_preloaded || 0} recipes loaded)`;
+                            document.body.appendChild(toast);
+                            setTimeout(() => toast.remove(), 5000);
+                        } else {
+                            console.error('❌ Preload failed:', data.error);
+                        }
+                    })
+                    .catch(err => {
+                        console.error('💥 Background preload failed:', err);
+                        console.error('Error details:', err.message, err.stack);
+                    });
             } else {
                 console.log('Chat successful, no data changes detected');
             }
@@ -1058,6 +1076,9 @@ async function updateMealPlanDisplay() {
                     </h2>
                     <div class="flex items-center gap-3">
                         <span class="text-sm text-gray-600">Week of ${weekOfFormatted}</span>
+                        <button onclick="clearPlan()" id="clearButton" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors flex items-center gap-2">
+                            <i class="fas fa-trash-alt"></i> Clear
+                        </button>
                         <button onclick="replanMeals()" id="replanButton" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2">
                             <i class="fas fa-sync-alt"></i> Replan
                         </button>
@@ -1214,10 +1235,198 @@ async function replanMeals() {
     }
 }
 
+// Start new week function - friendlier version of clear
+async function startNewWeek() {
+    const button = event.target.closest('button');
+    const icon = button.querySelector('i');
+
+    // Disable button during operation
+    button.disabled = true;
+    icon.classList.remove('fa-calendar-plus');
+    icon.classList.add('fa-spinner', 'spinner');
+
+    try {
+        // Call API to clear plan
+        const response = await fetch('/api/plan/clear', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Hide the meal plan display
+            const mealPlanContainer = document.getElementById('mealPlanContainer');
+            if (mealPlanContainer) {
+                mealPlanContainer.remove();
+            }
+
+            // Hide the week ended banner
+            const weekEndedBanner = document.getElementById('weekEndedBanner');
+            if (weekEndedBanner) {
+                weekEndedBanner.classList.add('hidden');
+            }
+
+            // Set date picker to next Monday
+            const weekOfInput = document.getElementById('weekOf');
+            const nextMonday = getNextMonday();
+            weekOfInput.valueAsDate = nextMonday;
+            currentStartDate = nextMonday;
+
+            // Expand chat if it's collapsed
+            const chatContainer = document.getElementById('chatContainer');
+            if (chatContainer.classList.contains('chat-collapsed')) {
+                toggleChat();
+            }
+
+            // Show friendly message in chat
+            addAssistantMessage('🎉 Great! Let\'s plan your meals for next week. Try saying "plan meals for 7 days"');
+
+            // Scroll to chat
+            chatContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            // Focus on input
+            document.getElementById('messageInput').focus();
+        } else {
+            alert('Error starting new week: ' + result.error);
+            button.disabled = false;
+            icon.classList.remove('fa-spinner', 'spinner');
+            icon.classList.add('fa-calendar-plus');
+        }
+    } catch (error) {
+        alert('Error starting new week: ' + error.message);
+        button.disabled = false;
+        icon.classList.remove('fa-spinner', 'spinner');
+        icon.classList.add('fa-calendar-plus');
+    }
+}
+
+// Clear plan function
+async function clearPlan() {
+    // Show confirmation dialog
+    if (!confirm('Are you sure you want to clear the current meal plan? This will also clear your shopping list.')) {
+        return;
+    }
+
+    const button = document.getElementById('clearButton');
+    const icon = button.querySelector('i');
+
+    // Disable button and show spinner
+    button.disabled = true;
+    icon.classList.remove('fa-trash-alt');
+    icon.classList.add('fa-spinner', 'spinner');
+
+    try {
+        // Call API to clear plan
+        const response = await fetch('/api/plan/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Remove meal plan container from DOM
+            const mealPlanContainer = document.getElementById('mealPlanContainer');
+            if (mealPlanContainer) {
+                mealPlanContainer.remove();
+            }
+
+            // Expand chat if it's collapsed
+            const chatContainer = document.getElementById('chatContainer');
+            if (chatContainer.classList.contains('chat-collapsed')) {
+                toggleChat();
+            }
+
+            // Show success message in chat
+            addAssistantMessage('✅ Meal plan cleared! Ready to plan a new week of meals.');
+
+            // Scroll to chat
+            chatContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+            alert('Error clearing plan: ' + result.error);
+            // Re-enable button
+            button.disabled = false;
+            icon.classList.remove('fa-spinner', 'spinner');
+            icon.classList.add('fa-trash-alt');
+        }
+    } catch (error) {
+        alert('Error clearing plan: ' + error.message);
+        // Re-enable button
+        button.disabled = false;
+        icon.classList.remove('fa-spinner', 'spinner');
+        icon.classList.add('fa-trash-alt');
+    }
+}
+
+// Check if current week has ended
+function checkWeekEnded() {
+    const weekOfDisplay = document.getElementById('weekOfDisplay');
+    if (!weekOfDisplay) return;
+
+    // Extract week_of date from the display text
+    const weekOfText = weekOfDisplay.textContent.match(/\d{4}-\d{2}-\d{2}/);
+    if (!weekOfText) return;
+
+    const weekStartDate = new Date(weekOfText[0]);
+    const weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekEndDate.getDate() + 6); // Add 6 days to get end of week
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Reset time for accurate date comparison
+
+    // Check if today is after the week's end date
+    if (today > weekEndDate) {
+        // Week has ended! Show the banner
+        const weekEndedBanner = document.getElementById('weekEndedBanner');
+        if (weekEndedBanner) {
+            weekEndedBanner.classList.remove('hidden');
+        }
+
+        // Update the plan title to indicate it's a past week
+        const planTitle = document.getElementById('planTitle');
+        if (planTitle) {
+            planTitle.textContent = 'Last Week\'s Plan';
+        }
+
+        // Add visual indicator that week is over
+        const mealPlanContainer = document.getElementById('mealPlanContainer');
+        if (mealPlanContainer) {
+            mealPlanContainer.classList.add('opacity-75');
+        }
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeWeekSelector();
     document.getElementById('messageInput').focus();
+
+    // Check if the current week has ended
+    checkWeekEnded();
+
+    // ⚡ Auto-trigger preload if there's already a meal plan on page load
+    const mealPlanContainer = document.getElementById('mealPlanContainer');
+    if (mealPlanContainer) {
+        console.log('⚡ Meal plan detected on page load, triggering background preload...');
+        fetch('/api/plan/preload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('✅ Background preload complete!', data);
+                } else {
+                    console.error('❌ Preload failed:', data.error);
+                }
+            })
+            .catch(err => {
+                console.error('💥 Background preload failed:', err);
+            });
+    }
 });
 </script>
 {% endblock %}

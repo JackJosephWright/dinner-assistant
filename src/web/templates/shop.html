@@ -162,15 +162,28 @@
                 </div>
             {% else %}
                 <div id="emptyState" class="text-center py-12">
+                    {% if meal_plan_id %}
+                    <!-- Auto-generate if meal plan exists but no shopping list -->
+                    <div id="loadingState">
+                        <div class="inline-block">
+                            <i class="fas fa-spinner fa-spin text-6xl text-green-500 mb-4"></i>
+                        </div>
+                        <h3 class="text-lg font-semibold text-gray-900 mb-2">Generating Your Shopping List...</h3>
+                        <p class="text-gray-600 mb-4">The AI is analyzing your meal plan and creating an organized shopping list.</p>
+                        <div class="max-w-md mx-auto bg-gray-100 rounded-lg p-4">
+                            <div class="flex items-center justify-center space-x-2 text-sm text-gray-700">
+                                <i class="fas fa-lightbulb text-yellow-500"></i>
+                                <span>This usually takes 20-30 seconds...</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% else %}
                     <i class="fas fa-shopping-basket text-6xl text-gray-300 mb-4"></i>
                     <h3 class="text-lg font-medium text-gray-900 mb-2">No Shopping List Yet</h3>
                     <p class="text-gray-500">
-                        {% if meal_plan_id %}
-                        Chat: "Create shopping list" to generate your list from your meal plan.
-                        {% else %}
                         Create a meal plan first, then return here to generate your shopping list.
-                        {% endif %}
                     </p>
+                    {% endif %}
                 </div>
             {% endif %}
         </div>
@@ -219,6 +232,10 @@ document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
     addMessage(message, 'user');
     input.value = '';
 
+    // Add typing indicator
+    const typingId = 'typing-' + Date.now();
+    addTypingIndicator(typingId);
+
     // Scroll to bottom
     scrollToBottom();
 
@@ -231,6 +248,9 @@ document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
         });
 
         const result = await response.json();
+
+        // Remove typing indicator
+        removeTypingIndicator(typingId);
 
         if (result.success) {
             // Add assistant response
@@ -246,6 +266,8 @@ document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
             addMessage('Error: ' + result.error, 'error');
         }
     } catch (error) {
+        // Remove typing indicator on error
+        removeTypingIndicator(typingId);
         addMessage('Error sending message: ' + error.message, 'error');
     } finally {
         input.disabled = false;
@@ -316,6 +338,33 @@ function scrollToBottom() {
     container.scrollTop = container.scrollHeight;
 }
 
+function addTypingIndicator(id) {
+    const messagesContainer = document.getElementById('chatMessages');
+    const messageDiv = document.createElement('div');
+    messageDiv.id = id;
+    messageDiv.className = 'flex items-start';
+    messageDiv.innerHTML = `
+        <div class="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-robot text-white text-sm"></i>
+        </div>
+        <div class="ml-3 bg-white rounded-lg shadow p-4">
+            <div class="flex items-center space-x-2">
+                <i class="fas fa-spinner fa-spin text-green-600"></i>
+                <span class="text-gray-600">Thinking...</span>
+            </div>
+        </div>
+    `;
+    messagesContainer.appendChild(messageDiv);
+    scrollToBottom();
+}
+
+function removeTypingIndicator(id) {
+    const indicator = document.getElementById(id);
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
 // Quick actions
 function printList() {
     window.print();
@@ -335,6 +384,70 @@ document.addEventListener('change', (e) => {
         const checked = document.querySelectorAll('input[type="checkbox"]:checked').length;
         const total = document.querySelectorAll('input[type="checkbox"]').length;
         // Could add checked/total display here
+    }
+});
+
+// Auto-generate shopping list if meal plan exists but list doesn't
+document.addEventListener('DOMContentLoaded', async () => {
+    const loadingState = document.getElementById('loadingState');
+
+    if (loadingState) {
+        console.log('🛒 No shopping list found, auto-generating...');
+
+        try {
+            // Trigger shopping list creation via chat
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: 'Create shopping list'
+                }),
+            });
+
+            const result = await response.json();
+
+            if (result.success && result.shopping_list_id) {
+                console.log('✅ Shopping list created:', result.shopping_list_id);
+
+                // Show success message briefly before reload
+                loadingState.innerHTML = `
+                    <div class="inline-block">
+                        <i class="fas fa-check-circle text-6xl text-green-500 mb-4"></i>
+                    </div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">Shopping List Ready!</h3>
+                    <p class="text-gray-600">Reloading page...</p>
+                `;
+
+                // Reload to show the list
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } else {
+                // Show error
+                loadingState.innerHTML = `
+                    <div class="inline-block">
+                        <i class="fas fa-exclamation-triangle text-6xl text-red-500 mb-4"></i>
+                    </div>
+                    <h3 class="text-lg font-semibold text-gray-900 mb-2">Error Generating List</h3>
+                    <p class="text-gray-600 mb-4">${result.error || 'Unknown error occurred'}</p>
+                    <button onclick="window.location.reload()" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
+                        Try Again
+                    </button>
+                `;
+            }
+        } catch (error) {
+            console.error('Error auto-generating shopping list:', error);
+            loadingState.innerHTML = `
+                <div class="inline-block">
+                    <i class="fas fa-exclamation-triangle text-6xl text-red-500 mb-4"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">Connection Error</h3>
+                <p class="text-gray-600 mb-4">Unable to generate shopping list. Please try again.</p>
+                <button onclick="window.location.reload()" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700">
+                    Retry
+                </button>
+            `;
+        }
     }
 });
 </script>

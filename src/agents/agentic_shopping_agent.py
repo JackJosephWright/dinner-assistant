@@ -69,7 +69,8 @@ class AgenticShoppingAgent:
             )
 
         self.client = Anthropic(api_key=api_key)
-        self.model = "claude-sonnet-4-5-20250929"
+        # Use Haiku for consolidation (simple structured task, 3-5x faster)
+        self.model = "claude-3-5-haiku-20241022"
 
         # Build the LangGraph workflow
         self.graph = self._build_graph()
@@ -166,6 +167,8 @@ class AgenticShoppingAgent:
     def _collect_ingredients_node(self, state: ShoppingState) -> ShoppingState:
         """
         LangGraph node: Collect all ingredients from meal plan recipes.
+
+        Uses cached recipes from meal plan (ZERO DB queries!) instead of re-fetching.
         """
         try:
             meal_plan = self.db.get_meal_plan(state["meal_plan_id"])
@@ -176,9 +179,15 @@ class AgenticShoppingAgent:
             raw_ingredients = []
 
             for planned_meal in meal_plan.meals:
-                recipe = self.db.get_recipe(planned_meal.recipe_id)
+                # Use cached recipe (ZERO DB queries!)
+                recipe = meal_plan.recipes_cache.get(planned_meal.recipe_id)
+
+                # Fallback to DB query if cache is empty (backward compatibility)
                 if not recipe:
-                    continue
+                    logger.warning(f"Recipe {planned_meal.recipe_id} not in cache, fetching from DB")
+                    recipe = self.db.get_recipe(planned_meal.recipe_id)
+                    if not recipe:
+                        continue
 
                 for ingredient_raw in recipe.ingredients_raw:
                     raw_ingredients.append({
@@ -187,7 +196,7 @@ class AgenticShoppingAgent:
                     })
 
             state["raw_ingredients"] = raw_ingredients
-            logger.info(f"Collected {len(raw_ingredients)} raw ingredients from {len(meal_plan.meals)} recipes")
+            logger.info(f"Collected {len(raw_ingredients)} raw ingredients from {len(meal_plan.meals)} recipes (using cache)")
 
             return state
 
@@ -249,8 +258,8 @@ chicken breast | 1.5 lbs | meat | Stir Fry
 onions | 2 medium | produce | Stir Fry, Pasta"""
 
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2048,  # Reduced from 4096 for faster response
+                model=self.model,  # Haiku (3-5x faster than Sonnet)
+                max_tokens=1024,  # Reduced from 2048 for faster response
                 messages=[{"role": "user", "content": prompt}]
             )
 

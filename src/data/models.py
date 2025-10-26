@@ -135,6 +135,7 @@ class MealPlan:
     created_at: datetime = field(default_factory=datetime.now)
     preferences_applied: List[str] = field(default_factory=list)
     id: Optional[str] = None  # Generated on save
+    recipes_cache: Dict[str, "Recipe"] = field(default_factory=dict)  # Cache full Recipe objects
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
@@ -144,17 +145,25 @@ class MealPlan:
             "meals": [meal.to_dict() for meal in self.meals],
             "created_at": self.created_at.isoformat(),
             "preferences_applied": self.preferences_applied,
+            "recipes_cache": {recipe_id: recipe.to_dict() for recipe_id, recipe in self.recipes_cache.items()},
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "MealPlan":
         """Create MealPlan from dictionary."""
+        # Reconstruct recipes_cache from dict
+        recipes_cache = {}
+        if "recipes_cache" in data:
+            for recipe_id, recipe_dict in data["recipes_cache"].items():
+                recipes_cache[recipe_id] = Recipe.from_dict(recipe_dict)
+
         return cls(
             id=data.get("id"),
             week_of=data["week_of"],
             meals=[PlannedMeal.from_dict(m) for m in data["meals"]],
             created_at=datetime.fromisoformat(data["created_at"]),
             preferences_applied=data.get("preferences_applied", []),
+            recipes_cache=recipes_cache,
         )
 
 

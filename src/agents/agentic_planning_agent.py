@@ -7,6 +7,7 @@ replacing the algorithmic scoring approach with true agentic reasoning.
 
 import logging
 import os
+import json
 from typing import Dict, List, Any, Optional, TypedDict, Annotated
 from datetime import datetime, timedelta
 import operator
@@ -73,7 +74,10 @@ class AgenticPlanningAgent:
             )
 
         self.client = Anthropic(api_key=api_key)
-        self.model = "claude-sonnet-4-5-20250929"
+        # Use Sonnet 4 for complex reasoning (meal selection)
+        self.model_complex = "claude-sonnet-4-5-20250929"
+        # Use Haiku for simple structured tasks (3-5x faster, cheaper)
+        self.model_simple = "claude-3-5-haiku-20241022"
 
         # Build the LangGraph workflow
         self.graph = self._build_graph()
@@ -162,11 +166,17 @@ class AgenticPlanningAgent:
                     )
                 )
 
-            # Save the meal plan
+            # Batch-fetch full recipes for caching (ONE DB query instead of N)
+            recipe_ids = [meal.recipe_id for meal in meals]
+            recipes_cache = self.db.get_recipes_batch(recipe_ids)
+            logger.info(f"Batch-fetched {len(recipes_cache)} recipes for caching")
+
+            # Save the meal plan with cached recipes
             meal_plan = MealPlan(
                 week_of=week_of,
                 meals=meals,
                 preferences_applied=list(preferences.keys()),
+                recipes_cache=recipes_cache,
             )
 
             plan_id = self.db.save_meal_plan(meal_plan)
@@ -239,8 +249,8 @@ Please analyze this data and provide:
 Be concise but insightful. Focus on actionable patterns for meal planning."""
 
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
+                model=self.model_simple,  # Use Haiku for simple analysis (3-5x faster)
+                max_tokens=512,  # Reduced from 1024
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -262,9 +272,9 @@ Be concise but insightful. Focus on actionable patterns for meal planning."""
 
     def _search_recipes_node(self, state: PlanningState) -> PlanningState:
         """
-        LangGraph node: Search for recipe candidates using LLM guidance.
+        LangGraph node: Search for recipe candidates using structured filters.
 
-        The LLM decides what to search for based on history analysis.
+        The LLM generates structured search criteria in ONE call for optimized database queries.
         """
         try:
             # Emit progress
@@ -274,7 +284,7 @@ Be concise but insightful. Focus on actionable patterns for meal planning."""
             preferences = state["preferences"]
             history_summary = state.get("history_summary", "")
 
-            # Ask LLM what to search for
+            # Ask LLM to generate structured filter criteria
             prompt = f"""You are a meal planning assistant. Based on this user analysis:
 
 {history_summary}
@@ -287,103 +297,99 @@ And these preferences:
 
 The user needs {state['num_days']} meals planned.
 
-Please provide 5-7 simple search keywords to find diverse recipe candidates.
-Use SHORT, SIMPLE keywords (1-2 words) that work well for database search.
+Please provide structured search criteria to find diverse recipe candidates. Generate 3-5 different filter combinations to ensure variety.
 
-Format each line EXACTLY as: KEYWORD | REASON
+For each search, specify:
+- cuisines: list of cuisine types (italian, mexican, chinese, thai, indian, japanese, etc.) - optional
+- proteins: list of proteins (chicken, beef, pork, fish, seafood, tofu, beans, eggs, turkey, lamb) - optional
+- dietary_flags: list of dietary requirements (vegetarian, vegan, gluten-free, dairy-free) - optional
+- max_time: maximum cooking time in minutes
+- difficulty: list of difficulty levels (easy, medium, hard) - optional
 
-Example:
-salmon | User frequently enjoys salmon dishes
-tofu | Need vegetarian options, user likes tofu
-chicken | Weeknight protein staple
-pasta | Quick Italian comfort food
+Format each search as a JSON object on a single line:
+{{"cuisines": ["italian"], "proteins": ["chicken"], "max_time": 45}}
+{{"dietary_flags": ["vegetarian"], "max_time": 45}}
+{{"proteins": ["fish", "seafood"], "cuisines": ["japanese", "thai"], "max_time": 60}}
 
-Keep keywords simple and searchable. Do NOT use complex phrases."""
+Generate 3-5 diverse searches to ensure variety across cuisines, proteins, and cooking styles."""
 
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
+                model=self.model_simple,  # Use Haiku for structured filters (3-5x faster)
+                max_tokens=256,  # Reduced from 512
                 messages=[{"role": "user", "content": prompt}]
             )
 
             search_plan = response.content[0].text
-            logger.info(f"LLM search plan:\n{search_plan}")
+            logger.info(f"LLM structured search plan:\n{search_plan}")
 
-            # Parse search queries and execute them
+            # Parse structured filters and execute searches
             recipe_candidates = []
-            recent_meal_names = set(m.lower() for m in state["recent_meals"])
+            recent_meal_ids = set()
+
+            # Get recent meals to exclude
+            for meal_name in state["recent_meals"]:
+                # Try to find the recipe ID for recent meals
+                results = self.db.search_recipes(query=meal_name, limit=1)
+                if results:
+                    recent_meal_ids.add(results[0].id)
 
             for line in search_plan.split("\n"):
-                # Skip comments, headers, and empty lines
                 line = line.strip()
-                if not line or line.startswith("#") or line.startswith("**") or ":" not in line and "|" not in line:
+                if not line or not line.startswith("{"):
                     continue
 
-                # Extract keyword - could be in format "**keyword**" or "keyword |"
-                keyword = ""
-                reason = ""
+                try:
+                    # Parse JSON filter
+                    filters = json.loads(line)
 
-                if "|" in line:
-                    parts = line.split("|")
-                    keyword = parts[0].strip()
-                    reason = parts[1].strip() if len(parts) > 1 else ""
-                elif ":" in line:
-                    # Handle format like "tofu stir fry: reason"
-                    parts = line.split(":", 1)
-                    keyword = parts[0].strip()
-                    reason = parts[1].strip() if len(parts) > 1 else ""
+                    # Execute structured search
+                    recipes = self.db.search_recipes_structured(
+                        cuisines=filters.get("cuisines"),
+                        proteins=filters.get("proteins"),
+                        dietary_flags=filters.get("dietary_flags"),
+                        min_time=filters.get("min_time"),
+                        max_time=filters.get("max_time", preferences.get("max_weeknight_time", 45)),
+                        difficulty=filters.get("difficulty"),
+                        exclude_ids=list(recent_meal_ids),
+                        limit=15,
+                    )
 
-                # Clean up markdown formatting
-                keyword = keyword.replace("**", "").replace("*", "").strip()
+                    # Add to candidates (already in compact format from search_recipes_structured)
+                    for recipe in recipes:
+                        recipe_candidates.append(recipe)
 
-                # Skip if keyword is empty or too short
-                if not keyword or len(keyword) < 3:
+                    logger.info(f"Structured search with {filters} found {len(recipes)} recipes")
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse filter JSON: {line} - {e}")
                     continue
-
-                # Search database
-                max_time = preferences.get("max_weeknight_time", 45)
-                recipes = self.db.search_recipes(
-                    query=keyword,
-                    max_time=max_time,
-                    limit=15,
-                )
-
-                # Filter out recent meals (but not too aggressively)
-                filtered_recipes = [r for r in recipes if r.name.lower() not in recent_meal_names]
-
-                # If filtering removed everything, use unfiltered results
-                # (better to repeat a meal than have no options)
-                if not filtered_recipes and recipes:
-                    logger.warning(f"All recipes for '{keyword}' were recent meals, using them anyway")
-                    filtered_recipes = recipes
-
-                # Add to candidates with metadata
-                for recipe in filtered_recipes[:5]:  # Top 5 per search
-                    recipe_candidates.append({
-                        "recipe_id": recipe.id,
-                        "recipe_name": recipe.name,
-                        "cuisine": recipe.cuisine,
-                        "difficulty": recipe.difficulty,
-                        "estimated_time": recipe.estimated_time,
-                        "search_keyword": keyword,
-                        "search_reason": reason,
-                    })
+                except Exception as e:
+                    logger.warning(f"Search failed for filters {line}: {e}")
+                    continue
 
             # Deduplicate candidates by recipe_id
             seen_ids = set()
             unique_candidates = []
             for candidate in recipe_candidates:
-                if candidate["recipe_id"] not in seen_ids:
-                    seen_ids.add(candidate["recipe_id"])
-                    unique_candidates.append(candidate)
+                if candidate["id"] not in seen_ids:
+                    seen_ids.add(candidate["id"])
+                    # Ensure consistent field names for downstream nodes
+                    unique_candidates.append({
+                        "recipe_id": candidate["id"],
+                        "recipe_name": candidate["name"],
+                        "cuisine": candidate.get("cuisine"),
+                        "difficulty": candidate.get("difficulty", "medium"),
+                        "estimated_time": candidate.get("time"),
+                        "protein": candidate.get("protein"),
+                    })
 
             state["recipe_candidates"] = unique_candidates
-            logger.info(f"Found {len(unique_candidates)} recipe candidates")
+            logger.info(f"Found {len(unique_candidates)} unique recipe candidates using structured search")
 
             return state
 
         except Exception as e:
-            logger.error(f"Error in search_recipes_node: {e}")
+            logger.error(f"Error in search_recipes_node: {e}", exc_info=True)
             state["error"] = f"Recipe search failed: {str(e)}"
             return state
 
@@ -407,15 +413,16 @@ Keep keywords simple and searchable. Do NOT use complex phrases."""
                 state["error"] = "No recipe candidates found"
                 return state
 
-            # Format candidates for LLM
+            # Format candidates for LLM (compact format for token efficiency)
             candidates_text = ""
-            for i, candidate in enumerate(candidates[:50]):  # Limit to 50 for token efficiency
-                candidates_text += f"{i+1}. {candidate['recipe_name']}\n"
-                candidates_text += f"   ID: {candidate['recipe_id']}\n"
-                candidates_text += f"   Cuisine: {candidate.get('cuisine', 'unknown')}, "
-                candidates_text += f"Time: {candidate.get('estimated_time', '?')} min, "
-                candidates_text += f"Difficulty: {candidate.get('difficulty', 'unknown')}\n"
-                candidates_text += f"   Why: {candidate.get('search_reason', '')}\n\n"
+            for i, candidate in enumerate(candidates[:20]):  # Limit to 20 for token efficiency
+                candidates_text += f"{i+1}. {candidate['recipe_name']} - "
+                candidates_text += f"{candidate.get('cuisine') or 'unknown'}, "
+                candidates_text += f"{candidate.get('estimated_time') or '?'}min, "
+                candidates_text += f"{candidate.get('difficulty', 'medium')}"
+                if candidate.get('protein'):
+                    candidates_text += f", {candidate['protein']}"
+                candidates_text += f" (ID: {candidate['recipe_id']})\n"
 
             # Ask LLM to select meals
             week_start = datetime.fromisoformat(week_of)
@@ -458,8 +465,8 @@ DAY 1: 5 | Quick salmon dish perfect for Monday, user loves salmon
 DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
 
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2048,
+                model=self.model_complex,  # Use Sonnet for complex reasoning
+                max_tokens=1024,  # Reduced from 2048
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -595,7 +602,7 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             if self.progress_callback:
                 self.progress_callback("Finding replacement options...")
 
-            # Ask LLM to determine search queries for the replacement
+            # Ask LLM to determine structured search filters for the replacement
             prompt = f"""You are a meal planning assistant. The user wants to swap a meal in their plan.
 
 Current meal: {meal_to_swap.recipe_name} on {day_name}, {date}
@@ -604,50 +611,71 @@ Max cooking time: {max_time} minutes
 
 User's requirements for replacement: {requirements}
 
-Please provide 3-5 search queries to find suitable replacement recipes.
-Each query should be a specific keyword or phrase.
+Please provide structured search criteria to find suitable replacement recipes. Generate 2-3 different filter combinations.
 
-Format as one keyword per line. Examples:
-shrimp
-garlic butter scallops
-seafood pasta
-shellfish"""
+For each search, specify:
+- cuisines: list of cuisine types (italian, mexican, chinese, thai, indian, japanese, etc.) - optional
+- proteins: list of proteins (chicken, beef, pork, fish, seafood, tofu, beans, eggs, turkey, lamb) - optional
+- dietary_flags: list of dietary requirements (vegetarian, vegan, gluten-free, dairy-free) - optional
+- max_time: maximum cooking time in minutes
+- difficulty: list of difficulty levels (easy, medium, hard) - optional
+
+Format each search as a JSON object on a single line:
+{{"proteins": ["seafood", "fish"], "max_time": {max_time}}}
+{{"cuisines": ["japanese", "thai"], "proteins": ["seafood"], "max_time": {max_time}}}"""
 
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=512,
+                model=self.model_simple,  # Use Haiku for search filters (3-5x faster)
+                max_tokens=256,  # Reduced from 512
                 messages=[{"role": "user", "content": prompt}]
             )
 
             search_queries_text = response.content[0].text
-            logger.info(f"LLM swap search queries:\n{search_queries_text}")
+            logger.info(f"LLM swap search filters:\n{search_queries_text}")
 
-            # Execute searches
+            # Execute structured searches
             candidates = []
-            recent_meal_names = {m.recipe_name.lower() for m in meal_plan.meals if m.date != date}
+            exclude_ids = [m.recipe_id for m in meal_plan.meals if m.date != date]
 
             for line in search_queries_text.split("\n"):
-                keyword = line.strip()
-                if not keyword or len(keyword) < 3:
+                line = line.strip()
+                if not line or not line.startswith("{"):
                     continue
 
-                # Search recipes
-                recipes = self.db.search_recipes(
-                    query=keyword,
-                    max_time=max_time,
-                    limit=10,
-                )
+                try:
+                    # Parse JSON filter
+                    filters = json.loads(line)
 
-                # Filter out meals already in the plan
-                for recipe in recipes:
-                    if recipe.name.lower() not in recent_meal_names:
+                    # Execute structured search
+                    recipes = self.db.search_recipes_structured(
+                        cuisines=filters.get("cuisines"),
+                        proteins=filters.get("proteins"),
+                        dietary_flags=filters.get("dietary_flags"),
+                        min_time=filters.get("min_time"),
+                        max_time=filters.get("max_time", max_time),
+                        difficulty=filters.get("difficulty"),
+                        exclude_ids=exclude_ids,
+                        limit=10,
+                    )
+
+                    # Add to candidates
+                    for recipe in recipes:
                         candidates.append({
-                            "recipe_id": recipe.id,
-                            "recipe_name": recipe.name,
-                            "cuisine": recipe.cuisine,
-                            "difficulty": recipe.difficulty,
-                            "estimated_time": recipe.estimated_time,
+                            "recipe_id": recipe["id"],
+                            "recipe_name": recipe["name"],
+                            "cuisine": recipe.get("cuisine"),
+                            "difficulty": recipe.get("difficulty", "medium"),
+                            "estimated_time": recipe.get("time"),
                         })
+
+                    logger.info(f"Swap search with {filters} found {len(recipes)} recipes")
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse filter JSON: {line} - {e}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Swap search failed for filters {line}: {e}")
+                    continue
 
             if not candidates:
                 return {"success": False, "error": "No suitable replacement recipes found"}
@@ -690,7 +718,7 @@ Format: NUMBER | REASON
 Example: 5 | Perfect shellfish dish with quick weeknight prep time"""
 
             response = self.client.messages.create(
-                model=self.model,
+                model=self.model_complex,  # Use Sonnet for selection reasoning
                 max_tokens=256,
                 messages=[{"role": "user", "content": selection_prompt}]
             )
@@ -780,8 +808,8 @@ Keep it concise and friendly - 2-3 short paragraphs."""
 
         try:
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
+                model=self.model_complex,  # Use Sonnet for explanations
+                max_tokens=512,  # Reduced from 1024
                 messages=[{"role": "user", "content": prompt}]
             )
 
