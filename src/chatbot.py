@@ -13,14 +13,14 @@ from datetime import datetime, timedelta
 
 from anthropic import Anthropic
 
-from src.main import MealPlanningAssistant
-from src.data.models import PlannedMeal, MealPlan
+from main import MealPlanningAssistant
+from data.models import PlannedMeal, MealPlan
 
 
 class MealPlanningChatbot:
     """LLM-powered chatbot with MCP tool access."""
 
-    def __init__(self):
+    def __init__(self, verbose=False):
         """Initialize chatbot with LLM and tools."""
         # Check for API key
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -40,6 +40,9 @@ class MealPlanningChatbot:
         # Current context
         self.current_meal_plan_id = None
         self.current_shopping_list_id = None
+
+        # Verbose mode for debugging
+        self.verbose = verbose
 
     def _select_recipes_with_llm(self, recipes: List, num_needed: int, recent_meals: List = None) -> List:
         """
@@ -330,6 +333,9 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 today = datetime.now().date()
                 dates = [(today + timedelta(days=i)).isoformat() for i in range(num_days)]
 
+                if self.verbose:
+                    print(f"      → Planning {num_days} days starting {dates[0]}")
+
                 # 2. SQL search for candidates
                 search_query = tool_input.get("search_query", "")
                 candidates = self.assistant.db.search_recipes(
@@ -337,6 +343,9 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     max_time=tool_input.get("max_time"),
                     limit=100
                 )
+
+                if self.verbose:
+                    print(f"      → SQL search found {len(candidates)} candidates for '{search_query}'")
 
                 if not candidates:
                     return f"No recipes found matching '{search_query}'. Try different search terms."
@@ -349,6 +358,12 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     and not any(r.has_allergen(a) for a in exclude_allergens)
                 ]
 
+                if self.verbose:
+                    if exclude_allergens:
+                        print(f"      → Filtered to {len(filtered)} recipes without {', '.join(exclude_allergens)}")
+                    else:
+                        print(f"      → All {len(filtered)} have structured ingredients")
+
                 if not filtered:
                     return f"Found {len(candidates)} recipes, but none without {', '.join(exclude_allergens)}. Try relaxing constraints."
 
@@ -358,7 +373,14 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 # 4. LLM selects with variety
                 recent_meals = self.assistant.db.get_meal_history(weeks_back=2)
                 recent_names = [m.recipe_name for m in recent_meals] if recent_meals else []
+
+                if self.verbose:
+                    print(f"      → Using LLM to select {num_days} varied recipes from {len(filtered)} options...")
+
                 selected = self._select_recipes_with_llm(filtered, num_days, recent_names)
+
+                if self.verbose:
+                    print(f"      → LLM selected: {', '.join([r.name[:30] for r in selected])}")
 
                 # 5. Create PlannedMeal objects with embedded recipes
                 meals = [
@@ -529,10 +551,19 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
             tool_results = []
             for content_block in response.content:
                 if content_block.type == "tool_use":
+                    if self.verbose:
+                        print(f"\n🔧 [TOOL] {content_block.name}")
+                        print(f"   Input: {json.dumps(content_block.input, indent=2)}")
+
                     tool_result = self.execute_tool(
                         content_block.name,
                         content_block.input,
                     )
+
+                    if self.verbose:
+                        # Truncate long results for readability
+                        result_preview = tool_result if len(tool_result) < 200 else tool_result[:200] + "..."
+                        print(f"   Result: {result_preview}\n")
 
                     tool_results.append({
                         "type": "tool_result",
@@ -574,10 +605,25 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
         print("\n" + "="*70)
         print("🍽️  MEAL PLANNING ASSISTANT - AI Chatbot")
         print("="*70)
-        print("\nPowered by Claude with MCP tools")
-        print("I can help you plan meals, create shopping lists, and find recipes!")
-        print("\nJust chat naturally - I'll use tools as needed.")
-        print("Type 'quit' to exit.\n")
+        print("\nPowered by Claude Sonnet 4.5 with intelligent tools")
+        print("Database: 5,000 enriched recipes (100% structured ingredients)")
+
+        if self.verbose:
+            print("Mode: VERBOSE (showing tool execution details)")
+
+        print("\n✨ What I can do:")
+        print("  • Plan meals with smart recipe selection")
+        print("  • Filter by allergens (dairy, gluten, nuts, etc.)")
+        print("  • Find recipes by keywords or cooking time")
+        print("  • Create shopping lists organized by category")
+        print("  • Swap meals in your plan")
+
+        print("\n💡 Try asking:")
+        print('  "Plan 4 days of chicken meals"')
+        print('  "Plan a week, no dairy or gluten"')
+        print('  "Show me quick pasta recipes under 30 minutes"')
+
+        print("\nType 'quit' to exit.\n")
 
         while True:
             try:
@@ -604,7 +650,20 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
 def main():
     """Entry point."""
-    chatbot = MealPlanningChatbot()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Meal Planning Assistant - AI-powered chat interface"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show tool execution details for debugging"
+    )
+
+    args = parser.parse_args()
+
+    chatbot = MealPlanningChatbot(verbose=args.verbose)
     chatbot.run()
 
 
