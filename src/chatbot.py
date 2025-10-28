@@ -10,6 +10,10 @@ import sys
 import json
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from anthropic import Anthropic
 
