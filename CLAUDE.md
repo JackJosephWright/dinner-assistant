@@ -52,34 +52,60 @@ SQLite DBs (recipes.db, user_data.db)
 
 ## Database Details
 
-### recipes.db
-- **recipes** table: 492,630 recipes from Food.com
-- Indexed on: name, tags, minutes, calories
-- Fields: id, name, minutes, tags, nutrition, n_steps, ingredients, etc.
+### recipes.db (Production)
+- **Size:** 2.2 GB
+- **Recipes:** 492,630 total, 5,000 enriched (1%)
+- **Table:** recipes
+- **Fields:** id, name, description, ingredients, ingredients_raw, ingredients_structured, steps, servings, tags, etc.
+- **Indexed on:** name, tags, estimated_time
+- **Status:** 5,000 recipes enriched with structured ingredients
+
+### recipes_dev.db (Development) ⭐
+- **Size:** 1.1 GB
+- **Recipes:** 5,000 total, 5,000 enriched (100%)
+- **Purpose:** Fast development environment with all enriched recipes
+- **Query Speed:** 98x faster than production
+- **Use for:** Feature development, testing enriched data features
 
 ### user_data.db
-- **meal_history**: 294 historical meals (60 weeks)
+- **meal_history**: Historical meals for learning
 - **meal_plans**: Generated meal plans
 - **preferences**: User preferences and dietary restrictions
 - **grocery_lists**: Shopping lists with store sections
 
 ## Current Status (Last Updated: 2025-10-28)
 
-### ✅ Completed
-- Day 1-2: Foundation complete
-- Recipe database loaded and searchable
+### ✅ Phase 1: Foundation - Complete
+- Recipe database loaded (492,630 recipes)
 - MCP server operational with planning tools
-- Planning agent structure implemented
+- Planning, Shopping, Cooking agents implemented
+- MealEvent system with rich tracking
+- UserProfile and onboarding complete
 - 77 tests passing (5.30 seconds)
-- Natural language recipe scaling feature
-- UI simplification (removed redundant Accept button)
 
-### 🚧 In Progress
-- Day 3: Completing Planning Agent (LLM integration, preference learning)
+### 🔄 Phase 2: Recipe Enrichment - In Progress (75% complete)
+**What's Working:**
+- ✅ Enhanced Recipe with structured ingredients (Ingredient, NutritionInfo dataclasses)
+- ✅ Ingredient parsing engine (98% accuracy, 0.958 avg confidence)
+- ✅ Development database created (5,000 enriched recipes, 100% enriched)
+- ✅ Recipe helper methods (scaling, allergen detection, serialization)
+- ✅ Comprehensive documentation (13 design docs, 3 dev guides)
+
+**Current:** Step 3 complete - Enhanced Recipe implemented
+**Next:** Step 4 - Update DatabaseInterface to load structured ingredients
+
+**Key Files:**
+- `src/data/models.py:18-336` - Ingredient, NutritionInfo, Enhanced Recipe
+- `scripts/enrich_recipe_ingredients.py` - Parser and enrichment engine
+- `scripts/create_dev_database.py` - Dev database creation
+- `data/recipes_dev.db` - 5,000 enriched recipes (1.1 GB, all enriched)
+- `docs/development/CHECKPOINT_RECIPE_ENRICHMENT.md` - Complete phase summary
 
 ### 📋 Next Steps
-- Day 4: Shopping Agent implementation
-- Day 5: Cooking Agent + full integration
+- Step 4: Update DatabaseInterface for structured ingredients
+- Steps 5-7: PlannedMeal & MealPlan redesign (embedded recipes)
+- Steps 8-9: Update agents to use new structures
+- Future: Full enrichment of 492K recipes
 
 ## Development Commands
 
@@ -88,6 +114,7 @@ SQLite DBs (recipes.db, user_data.db)
 pytest                              # All tests
 pytest tests/unit/                  # Unit tests only
 pytest --cov=src --cov-report=html  # With coverage
+python3 test_enhanced_recipe.py     # Test enhanced Recipe implementation
 
 # Run application
 ./run.sh chat                       # Chatbot mode
@@ -95,8 +122,13 @@ pytest --cov=src --cov-report=html  # With coverage
 ./run.sh workflow                   # One-shot workflow
 
 # Database setup
-python scripts/load_recipes.py      # Load recipe data
-python scripts/load_history.py      # Load meal history
+python3 scripts/load_recipes.py     # Load recipe data (production)
+python3 scripts/enrich_5k_recipes.py # Enrich 5,000 recipes
+python3 scripts/create_dev_database.py # Create dev database
+
+# Development database
+# Use recipes_dev.db for feature development (5K enriched recipes)
+# Use recipes.db for production testing (492K total, 5K enriched)
 
 # Git
 git log --oneline -10               # Recent commits
@@ -133,18 +165,36 @@ class PlanningState:
 
 ## Key Files Reference
 
+### Core Implementation
+- `src/data/models.py:18-73` - Ingredient dataclass
+- `src/data/models.py:76-99` - NutritionInfo dataclass
+- `src/data/models.py:102-336` - Enhanced Recipe class
 - `src/data/database.py:45` - DatabaseInterface.search_recipes()
 - `src/agents/planning_agent.py:67` - PlanningAgent.create_plan()
 - `src/chatbot.py:123` - Main chatbot loop
-- `docs/archive/STATUS.md` - Detailed project status
-- `docs/archive/PROGRESS.md` - Development progress tracking
+
+### Enrichment Scripts
+- `scripts/ingredient_mappings.py` - 150+ category mappings, 50+ allergen mappings
+- `scripts/enrich_recipe_ingredients.py` - SimpleIngredientParser, enrichment engine
+- `scripts/enrich_5k_recipes.py` - Quick enrichment for dev database
+- `scripts/create_dev_database.py` - Dev database creation tool
+
+### Documentation
+- `docs/development/CHECKPOINT_RECIPE_ENRICHMENT.md` - Phase 2 complete summary
+- `docs/development/DEV_DATABASE.md` - Development database guide
+- `docs/development/IMPLEMENTATION_STATUS.md` - What's built vs designed
+- `docs/development/ROADMAP.md` - Project roadmap and phases
+- `docs/design/decisions.md` - Architecture decision records
+- `docs/design/step2e_enhanced_recipe_design.md` - Latest design doc
 
 ## Common Issues
 
-1. **Large database files** - recipes.db is ~1.5GB, git-ignored
-2. **API keys** - Required: ANTHROPIC_API_KEY in .env
-3. **Import paths** - Use absolute imports: `from src.data import models`
-4. **Test data** - Integration tests create temporary databases
+1. **Large database files** - recipes.db (2.2 GB), recipes_dev.db (1.1 GB) are git-ignored
+2. **Development database** - Use `recipes_dev.db` for feature development (100% enriched)
+3. **Non-enriched recipes** - Only 5,000 out of 492K recipes are enriched currently
+4. **API keys** - Required: ANTHROPIC_API_KEY in .env
+5. **Import paths** - Use absolute imports: `from src.data import models`
+6. **Test data** - Integration tests create temporary databases
 
 ## Notes
 
