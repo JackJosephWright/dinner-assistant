@@ -45,6 +45,10 @@ class MealPlanningChatbot:
         self.current_meal_plan_id = None
         self.current_shopping_list_id = None
 
+        # In-memory object store (for follow-up questions)
+        self.last_search_results = []  # List[Recipe]
+        self.last_meal_plan = None  # MealPlan object
+
         # Verbose mode for debugging
         self.verbose = verbose
 
@@ -153,7 +157,12 @@ For cooking help:
 - Use get_cooking_guide to provide instructions
 - Suggest substitutions when asked
 
-IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy explanations. Confirm actions with 1-2 sentences max."""
+When analyzing recipes:
+- If asked about ingredients/allergens, use get_cooking_guide to check the ingredients
+- ANALYZE the tool results and ANSWER the user's question directly
+- Don't just display tool results - use them to answer what was asked
+
+IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy explanations. Confirm actions with 1-2 sentences max. BUT ALWAYS answer the user's actual question based on tool results."""
 
     def get_tools(self) -> List[Dict[str, Any]]:
         """Define tools available to the LLM."""
@@ -452,6 +461,15 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     time_str = f"{recipe.estimated_time} min" if recipe.estimated_time else "?"
                     output += f"- {recipe.name} (ID: {recipe.id})\n"
                     output += f"  Time: {time_str}, Difficulty: {recipe.difficulty}\n"
+
+                    # Include allergen info if recipe is enriched
+                    if recipe.has_structured_ingredients():
+                        allergens = recipe.get_all_allergens()
+                        if allergens:
+                            output += f"  Allergens: {', '.join(allergens)}\n"
+                        else:
+                            output += f"  Allergens: none detected\n"
+
                 return output
 
             elif tool_name == "get_cooking_guide":
