@@ -16,18 +16,106 @@ import json
 
 
 @dataclass
+class Ingredient:
+    """Structured ingredient data from recipe enrichment.
+
+    This represents a parsed ingredient with quantity, unit, and metadata.
+    Created by the enrichment script (scripts/enrich_recipe_ingredients.py).
+    """
+    raw: str  # Original ingredient string
+    quantity: Optional[float] = None  # Numeric quantity (e.g., 2.0)
+    unit: Optional[str] = None  # Unit of measurement (e.g., "cup", "tablespoon")
+    name: str = ""  # Ingredient name (e.g., "flour", "butter")
+    modifier: Optional[str] = None  # Modifier (e.g., "all-purpose", "unsalted")
+    preparation: Optional[str] = None  # Preparation note (e.g., "chopped", "sifted")
+    category: str = "other"  # Shopping category (e.g., "baking", "produce", "meat")
+    allergens: List[str] = field(default_factory=list)  # Allergens (e.g., ["gluten", "dairy"])
+    substitutable: bool = True  # Whether ingredient can be substituted
+    confidence: float = 1.0  # Parser confidence (0.0-1.0)
+    parse_method: str = "auto"  # How it was parsed ("auto", "manual", "fallback")
+
+    def __str__(self) -> str:
+        """Human-readable ingredient string."""
+        if self.quantity and self.unit:
+            return f"{self.quantity} {self.unit} {self.name}"
+        elif self.quantity:
+            return f"{self.quantity} {self.name}"
+        else:
+            return self.name
+
+    def scale(self, factor: float) -> 'Ingredient':
+        """Scale ingredient quantity by factor.
+
+        Args:
+            factor: Scaling factor (e.g., 2.0 for doubling, 0.5 for halving)
+
+        Returns:
+            New Ingredient with scaled quantity
+
+        Note:
+            Returns self unchanged if quantity is None (e.g., "salt to taste")
+        """
+        if self.quantity is None:
+            return self  # Can't scale "to taste" ingredients
+
+        return Ingredient(
+            raw=f"{self.quantity * factor} {self.unit or ''} {self.name}",
+            quantity=self.quantity * factor,
+            unit=self.unit,
+            name=self.name,
+            modifier=self.modifier,
+            preparation=self.preparation,
+            category=self.category,
+            allergens=self.allergens.copy(),
+            substitutable=self.substitutable,
+            confidence=self.confidence,
+            parse_method=self.parse_method
+        )
+
+
+@dataclass
+class NutritionInfo:
+    """Nutrition information per serving.
+
+    Note: Currently a placeholder. Nutrition data parsing not yet implemented.
+    """
+    calories: Optional[int] = None
+    protein_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fiber_g: Optional[float] = None
+    sugar_g: Optional[float] = None
+    sodium_mg: Optional[int] = None
+
+    def __str__(self) -> str:
+        """Human-readable nutrition summary."""
+        parts = []
+        if self.calories:
+            parts.append(f"{self.calories} cal")
+        if self.protein_g:
+            parts.append(f"{self.protein_g}g protein")
+        if self.carbs_g:
+            parts.append(f"{self.carbs_g}g carbs")
+        return ", ".join(parts) if parts else "Nutrition info unavailable"
+
+
+@dataclass
 class Recipe:
-    """Recipe from Food.com dataset."""
+    """Recipe from Food.com dataset with optional enriched ingredient data."""
 
     id: str
     name: str
     description: str
-    ingredients: List[str]  # Clean ingredient names
+    ingredients: List[str]  # Clean ingredient names (for search)
     ingredients_raw: List[str]  # Original with quantities
     steps: List[str]
     servings: int
     serving_size: str
     tags: List[str]
+
+    # Enriched data (optional, only for enriched recipes)
+    ingredients_structured: Optional[List[Ingredient]] = None  # Parsed ingredient objects
+    nutrition: Optional[NutritionInfo] = None  # Nutrition data (placeholder)
 
     # Derived fields
     estimated_time: Optional[int] = None  # Minutes, from tags
@@ -75,9 +163,124 @@ class Recipe:
             return "hard"
         return "medium"
 
+    def has_structured_ingredients(self) -> bool:
+        """Check if recipe has been enriched with structured ingredient data.
+
+        Returns:
+            True if recipe has structured ingredients, False otherwise
+        """
+        return (
+            self.ingredients_structured is not None
+            and len(self.ingredients_structured) > 0
+        )
+
+    def get_ingredients(self) -> List[Ingredient]:
+        """Get structured ingredients (enriched recipes only).
+
+        Returns:
+            List of Ingredient objects
+
+        Raises:
+            ValueError: If recipe has not been enriched
+
+        Note:
+            For development phase, only works with enriched recipes.
+            Fallback parsing can be added later if needed.
+        """
+        if not self.has_structured_ingredients():
+            raise ValueError(
+                f"Recipe '{self.name}' (ID: {self.id}) has not been enriched with structured ingredients. "
+                f"Only {5000} recipes out of {492630} are currently enriched."
+            )
+        return self.ingredients_structured
+
+    def has_allergen(self, allergen: str) -> bool:
+        """Check if recipe contains a specific allergen.
+
+        Args:
+            allergen: Allergen to check (e.g., "gluten", "dairy", "eggs")
+
+        Returns:
+            True if allergen present, False otherwise
+
+        Raises:
+            ValueError: If recipe has not been enriched
+        """
+        if not self.has_structured_ingredients():
+            raise ValueError(
+                f"Recipe '{self.name}' requires structured ingredients for allergen checking"
+            )
+
+        allergen_lower = allergen.lower()
+        for ing in self.ingredients_structured:
+            if allergen_lower in [a.lower() for a in ing.allergens]:
+                return True
+        return False
+
+    def get_all_allergens(self) -> List[str]:
+        """Get all unique allergens in recipe.
+
+        Returns:
+            Sorted list of allergen names
+
+        Raises:
+            ValueError: If recipe has not been enriched
+        """
+        if not self.has_structured_ingredients():
+            raise ValueError(
+                f"Recipe '{self.name}' requires structured ingredients for allergen detection"
+            )
+
+        all_allergens = set()
+        for ing in self.ingredients_structured:
+            all_allergens.update(ing.allergens)
+
+        return sorted(list(all_allergens))
+
+    def scale_ingredients(self, target_servings: int) -> 'Recipe':
+        """Create a new recipe with scaled ingredient quantities.
+
+        Args:
+            target_servings: Desired number of servings
+
+        Returns:
+            New Recipe object with scaled quantities (original unchanged)
+
+        Raises:
+            ValueError: If recipe has not been enriched
+
+        Note:
+            Returns immutable copy - original recipe is not modified
+        """
+        if not self.has_structured_ingredients():
+            raise ValueError(
+                f"Recipe '{self.name}' requires structured ingredients for scaling"
+            )
+
+        factor = target_servings / self.servings
+        scaled_ingredients = [ing.scale(factor) for ing in self.ingredients_structured]
+
+        # Create new recipe (don't modify original)
+        return Recipe(
+            id=self.id,
+            name=f"{self.name} ({target_servings} servings)",
+            description=self.description,
+            ingredients=self.ingredients,  # Keep original clean names
+            ingredients_raw=self.ingredients_raw,  # Keep original raw
+            steps=self.steps,
+            servings=target_servings,
+            serving_size=self.serving_size,
+            tags=self.tags,
+            ingredients_structured=scaled_ingredients,
+            nutrition=self.nutrition,
+            estimated_time=self.estimated_time,
+            cuisine=self.cuisine,
+            difficulty=self.difficulty,
+        )
+
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
@@ -92,10 +295,45 @@ class Recipe:
             "difficulty": self.difficulty,
         }
 
+        # Add enriched data if present
+        if self.ingredients_structured:
+            data["ingredients_structured"] = [
+                ing.__dict__ for ing in self.ingredients_structured
+            ]
+
+        if self.nutrition:
+            data["nutrition"] = self.nutrition.__dict__
+
+        return data
+
     @classmethod
     def from_dict(cls, data: Dict) -> "Recipe":
-        """Create Recipe from dictionary."""
-        return cls(**data)
+        """Create Recipe from dictionary.
+
+        Args:
+            data: Dictionary representation of Recipe
+
+        Returns:
+            Recipe object with structured ingredients parsed if present
+        """
+        # Parse ingredients_structured if present
+        ingredients_structured = None
+        if "ingredients_structured" in data and data["ingredients_structured"]:
+            ingredients_structured = [
+                Ingredient(**ing_data) for ing_data in data["ingredients_structured"]
+            ]
+
+        # Parse nutrition if present
+        nutrition = None
+        if "nutrition" in data and data["nutrition"]:
+            nutrition = NutritionInfo(**data["nutrition"])
+
+        # Create recipe with parsed enriched data
+        recipe_data = {**data}
+        recipe_data["ingredients_structured"] = ingredients_structured
+        recipe_data["nutrition"] = nutrition
+
+        return cls(**recipe_data)
 
 
 @dataclass

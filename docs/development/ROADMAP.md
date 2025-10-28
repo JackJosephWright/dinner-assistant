@@ -1,6 +1,6 @@
 # Project Roadmap
 
-**Last Updated**: October 13, 2025
+**Last Updated**: October 28, 2025
 
 ---
 
@@ -30,7 +30,140 @@
 
 ---
 
-## 🔄 Phase 2: Integration & User Experience (IN PROGRESS)
+## 🔄 Phase 2: Recipe Enrichment (IN PROGRESS)
+
+**Goal**: Enhance recipe data structure to support shopping list generation, allergen filtering, and recipe scaling without runtime parsing.
+
+**Started**: 2025-10-28
+**Current Status**: Design Complete (Step 2e), Ready for Implementation (Step 3)
+**Overall Progress**: 75% complete
+
+### Completed Steps ✅
+
+#### Step 1: Recipe Analysis (Complete)
+- **Document**: `docs/design/step1_recipe_analysis.md`
+- **Status**: ✅ Complete
+- **Result**: Analyzed current Recipe object, identified need for structured ingredients
+
+#### Step 2a: Ingredient Data Structure Design (Complete)
+- **Document**: `docs/design/step2a_ingredient_design.md`
+- **Status**: ✅ Complete
+- **Decision**: 11-field Ingredient dataclass (Decision 2 in decisions.md)
+- **Result**: Comprehensive ingredient model with quantity, unit, category, allergens
+
+#### Step 2b: Enrichment Script (Complete)
+- **Document**: `docs/design/step2b_enrichment_script.md`
+- **Status**: ✅ Complete
+- **Implementation**:
+  - `scripts/ingredient_mappings.py` (150+ mappings)
+  - `scripts/enrich_recipe_ingredients.py` (parser + enricher)
+- **Result**: Working enrichment script with 98% accuracy
+
+#### Step 2c: Test Results (Complete)
+- **Document**: `docs/design/step2c_test_results.md`
+- **Status**: ✅ Complete
+- **Test Size**: 100 recipes
+- **Result**: 98% high quality, 2% partial, 0% failures
+- **Confidence**: 0.967 average
+
+#### Step 2d: Subset Enrichment (Complete)
+- **Document**: `docs/design/step2d_subset_enrichment.md`
+- **Status**: ✅ Complete
+- **Enriched**: 5,000 recipes (out of 492,630 total)
+- **Result**: 98% high quality, production-ready for development
+- **Decision**: Subset enrichment approach (Decision 4 in decisions.md)
+
+#### Step 2e: Enhanced Recipe Design (Complete)
+- **Document**: `docs/design/step2e_enhanced_recipe_design.md`
+- **Status**: ✅ Complete
+- **Design**: Enhanced Recipe class with:
+  - Dual ingredient storage (raw + structured)
+  - Helper methods (scaling, allergen filtering, category grouping)
+  - Backward compatible (works with non-enriched recipes)
+  - Serialization support (for embedding in meal plans)
+- **Decision**: Embed full recipes in meal plans (Decision 3 in decisions.md)
+
+### Current Step ⏳
+
+#### Step 3: Implement Enhanced Recipe (Next)
+- **Status**: 📋 Ready to implement
+- **Effort**: Medium (2-3 hours)
+- **Files to modify**:
+  - `src/data/models.py` - Add Ingredient, NutritionInfo, enhanced Recipe
+- **Tasks**:
+  - [ ] Add Ingredient dataclass
+  - [ ] Add NutritionInfo dataclass
+  - [ ] Update Recipe class with helper methods
+  - [ ] Add to_dict/from_dict serialization
+  - [ ] Write unit tests
+
+### Upcoming Steps
+
+#### Step 4: Update DatabaseInterface
+- **Status**: Not started
+- **Effort**: Small (1-2 hours)
+- **Tasks**:
+  - Parse `ingredients_structured` JSON from database
+  - Parse `nutrition` JSON from database
+  - Maintain backward compatibility
+
+#### Step 5-7: PlannedMeal & MealPlan Redesign
+- **Status**: Not started
+- **Effort**: Large (1-2 days)
+- **Tasks**:
+  - Design PlannedMeal with embedded Recipe objects
+  - Support multi-recipe meals (main + sides)
+  - Design MealPlan with dict-by-day structure
+  - Implement both models
+
+#### Step 8-9: Agent Updates
+- **Status**: Not started
+- **Effort**: Medium (3-4 hours)
+- **Tasks**:
+  - Update Shopping agent to use structured ingredients
+  - Update Planning agent to use allergen filtering
+  - Update Cooking agent to use embedded recipes
+  - Remove unnecessary re-querying
+
+### Key Decisions
+
+1. **Pre-enrich Dataset** (Decision 1) - Approved
+   - Parse ingredients once, use forever
+   - Enables instant shopping lists and trivial scaling
+
+2. **Ingredient Structure** (Decision 2) - Approved
+   - 11-field dataclass with quantity, unit, name, category, allergens
+   - ~150-200 bytes per ingredient
+
+3. **Embed Recipes in Meal Plans** (Decision 3) - Approved
+   - Store full Recipe objects, not just IDs
+   - Eliminates re-querying (5-7 queries → 0)
+
+4. **Subset Enrichment** (Decision 4) - Approved
+   - 5,000 recipes for development
+   - Full enrichment deferred until validated
+
+### Artifacts Created
+
+**Code:**
+- `scripts/ingredient_mappings.py` - Category and allergen mappings
+- `scripts/enrich_recipe_ingredients.py` - Parser and enrichment engine
+
+**Database:**
+- `ingredients_structured` column added to recipes table
+- 5,000 recipes enriched (98% high quality)
+
+**Documentation:**
+- 6 design documents (step1 through step2e)
+- Decision log with 4 major decisions
+- Checkpoint document (`CHECKPOINT_RECIPE_ENRICHMENT.md`)
+- Implementation status tracker (`IMPLEMENTATION_STATUS.md`)
+
+**See**: `docs/development/CHECKPOINT_RECIPE_ENRICHMENT.md` for complete details
+
+---
+
+## 🔄 Phase 3: Integration & User Experience (PLANNED)
 
 ### High Priority
 
