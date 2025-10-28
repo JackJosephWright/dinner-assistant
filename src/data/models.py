@@ -338,41 +338,276 @@ class Recipe:
 
 @dataclass
 class PlannedMeal:
-    """A single meal in a meal plan."""
+    """A planned meal for a specific date with embedded recipe."""
 
     date: str  # ISO format: "2025-01-20"
-    meal_type: str  # "dinner", "lunch", etc.
-    recipe_id: str
-    recipe_name: str
-    servings: int
+    meal_type: str  # "breakfast", "lunch", "dinner", "snack"
+    recipe: "Recipe"  # Full Recipe object embedded
+    servings: int  # May differ from recipe.servings
     notes: Optional[str] = None
 
+    def get_scaled_recipe(self) -> "Recipe":
+        """
+        Get the recipe scaled to this meal's servings.
+
+        Returns:
+            New Recipe object with ingredients scaled to meal servings
+        """
+        if self.servings == self.recipe.servings:
+            return self.recipe
+        return self.recipe.scale_ingredients(self.servings)
+
+    def get_ingredients(self) -> List[Ingredient]:
+        """
+        Get ingredients for this meal (scaled to servings).
+
+        Returns:
+            List of Ingredient objects scaled to meal servings
+
+        Raises:
+            ValueError: If recipe is not enriched
+        """
+        scaled_recipe = self.get_scaled_recipe()
+        return scaled_recipe.get_ingredients()
+
+    def has_allergen(self, allergen: str) -> bool:
+        """
+        Check if this meal contains a specific allergen.
+
+        Args:
+            allergen: Allergen name to check
+
+        Returns:
+            True if meal contains allergen
+        """
+        return self.recipe.has_allergen(allergen)
+
+    def get_all_allergens(self) -> List[str]:
+        """
+        Get all allergens in this meal.
+
+        Returns:
+            List of unique allergen names
+        """
+        return self.recipe.get_all_allergens()
+
+    def get_summary(self) -> str:
+        """
+        Get a concise summary of the meal.
+
+        Returns:
+            Summary string with key details
+        """
+        return f"{self.date} - {self.meal_type.title()}: {self.recipe.name} (serves {self.servings})"
+
+    def __str__(self) -> str:
+        """Human-readable string."""
+        return f"{self.meal_type.title()}: {self.recipe.name} ({self.servings} servings)"
+
     def to_dict(self) -> Dict:
-        """Convert to dictionary for JSON serialization."""
+        """
+        Serialize to dictionary.
+
+        Returns:
+            Dictionary with all fields, recipe as nested dict
+        """
         return {
             "date": self.date,
             "meal_type": self.meal_type,
-            "recipe_id": self.recipe_id,
-            "recipe_name": self.recipe_name,
+            "recipe": self.recipe.to_dict(),  # Nested recipe dict
             "servings": self.servings,
             "notes": self.notes,
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "PlannedMeal":
-        """Create PlannedMeal from dictionary."""
-        return cls(**data)
+        """
+        Deserialize from dictionary with backward compatibility.
+
+        Args:
+            data: Dictionary from to_dict()
+
+        Returns:
+            PlannedMeal object
+        """
+        # New format: embedded recipe
+        if "recipe" in data and isinstance(data["recipe"], dict):
+            recipe = Recipe.from_dict(data["recipe"])
+
+        # Old format: recipe_id only (backward compatibility)
+        elif "recipe_id" in data:
+            # Create minimal Recipe for backward compatibility
+            recipe = Recipe(
+                id=data["recipe_id"],
+                name=data.get("recipe_name", "Unknown Recipe"),
+                description="",
+                ingredients=[],
+                ingredients_raw=[],
+                steps=[],
+                servings=data.get("servings", 4),
+                serving_size="",
+                tags=[],
+            )
+        else:
+            raise ValueError("PlannedMeal data must contain either 'recipe' or 'recipe_id'")
+
+        return cls(
+            date=data["date"],
+            meal_type=data["meal_type"],
+            recipe=recipe,
+            servings=data["servings"],
+            notes=data.get("notes"),
+        )
 
 
 @dataclass
 class MealPlan:
-    """Weekly meal plan."""
+    """Weekly meal plan with embedded recipes."""
 
     week_of: str  # ISO format: "2025-01-20" (Monday of the week)
     meals: List[PlannedMeal]
     created_at: datetime = field(default_factory=datetime.now)
     preferences_applied: List[str] = field(default_factory=list)
     id: Optional[str] = None  # Generated on save
+
+    def get_meals_for_day(self, date: str) -> List[PlannedMeal]:
+        """
+        Get all meals for a specific date.
+
+        Args:
+            date: ISO format date string (YYYY-MM-DD)
+
+        Returns:
+            List of PlannedMeal objects for that date
+        """
+        return [meal for meal in self.meals if meal.date == date]
+
+    def get_meals_by_type(self, meal_type: str) -> List[PlannedMeal]:
+        """
+        Get all meals of a specific type.
+
+        Args:
+            meal_type: "breakfast", "lunch", "dinner", "snack"
+
+        Returns:
+            List of PlannedMeal objects of that type
+        """
+        return [meal for meal in self.meals if meal.meal_type == meal_type]
+
+    def get_date_range(self) -> tuple:
+        """
+        Get the start and end dates of this meal plan.
+
+        Returns:
+            Tuple of (start_date, end_date) in ISO format
+        """
+        if not self.meals:
+            return (self.week_of, self.week_of)
+
+        dates = [meal.date for meal in self.meals]
+        return (min(dates), max(dates))
+
+    def get_all_ingredients(self) -> List[Ingredient]:
+        """
+        Get all ingredients from all meals (for shopping list).
+
+        Returns:
+            List of all Ingredient objects from all meals
+
+        Raises:
+            ValueError: If any recipe is not enriched
+        """
+        all_ingredients = []
+        for meal in self.meals:
+            all_ingredients.extend(meal.get_ingredients())
+        return all_ingredients
+
+    def get_shopping_list_by_category(self) -> Dict[str, List[Ingredient]]:
+        """
+        Get ingredients grouped by category for shopping.
+
+        Returns:
+            Dictionary mapping category to list of ingredients
+            Example: {"produce": [Ingredient(...), ...], "dairy": [...], ...}
+
+        Raises:
+            ValueError: If any recipe is not enriched
+        """
+        all_ingredients = self.get_all_ingredients()
+
+        by_category = {}
+        for ing in all_ingredients:
+            category = ing.category
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(ing)
+
+        return by_category
+
+    def get_all_allergens(self) -> List[str]:
+        """
+        Get all unique allergens across all meals.
+
+        Returns:
+            List of unique allergen names
+        """
+        allergens = set()
+        for meal in self.meals:
+            allergens.update(meal.get_all_allergens())
+        return sorted(list(allergens))
+
+    def has_allergen(self, allergen: str) -> bool:
+        """
+        Check if any meal in plan contains allergen.
+
+        Args:
+            allergen: Allergen name to check
+
+        Returns:
+            True if any meal contains allergen
+        """
+        return any(meal.has_allergen(allergen) for meal in self.meals)
+
+    def get_meals_with_allergen(self, allergen: str) -> List[PlannedMeal]:
+        """
+        Get all meals containing a specific allergen.
+
+        Args:
+            allergen: Allergen name to check
+
+        Returns:
+            List of PlannedMeal objects containing allergen
+        """
+        return [meal for meal in self.meals if meal.has_allergen(allergen)]
+
+    def get_meals_by_date(self) -> Dict[str, List[PlannedMeal]]:
+        """
+        Get meals organized by date.
+
+        Returns:
+            Dictionary mapping date to list of meals
+            Example: {"2025-10-28": [PlannedMeal(...), ...], ...}
+        """
+        by_date = {}
+        for meal in self.meals:
+            if meal.date not in by_date:
+                by_date[meal.date] = []
+            by_date[meal.date].append(meal)
+        return by_date
+
+    def get_summary(self) -> str:
+        """
+        Get a concise summary of the meal plan.
+
+        Returns:
+            Summary string with key details
+        """
+        start, end = self.get_date_range()
+        return f"Meal Plan: {start} to {end} ({len(self.meals)} meals)"
+
+    def __str__(self) -> str:
+        """Human-readable string."""
+        return self.get_summary()
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""

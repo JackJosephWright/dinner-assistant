@@ -13,7 +13,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pathlib import Path
 
-from .models import Recipe, MealPlan, PlannedMeal, GroceryList, GroceryItem, MealEvent, UserProfile
+from .models import Recipe, MealPlan, PlannedMeal, GroceryList, GroceryItem, MealEvent, UserProfile, Ingredient
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,11 @@ class DatabaseInterface:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM recipes WHERE id = ?", (recipe_id,))
+            cursor.execute("""
+                SELECT id, name, description, ingredients, ingredients_raw,
+                       ingredients_structured, steps, servings, serving_size, tags
+                FROM recipes WHERE id = ?
+            """, (recipe_id,))
             row = cursor.fetchone()
 
             if row:
@@ -283,12 +287,23 @@ class DatabaseInterface:
 
     def _row_to_recipe(self, row: sqlite3.Row) -> Recipe:
         """Convert database row to Recipe object."""
+        # Parse ingredients_structured if present
+        ingredients_structured = None
+        if row["ingredients_structured"]:
+            try:
+                ing_data = json.loads(row["ingredients_structured"])
+                ingredients_structured = [Ingredient(**ing) for ing in ing_data]
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Failed to parse ingredients_structured for recipe {row['id']}: {e}")
+                ingredients_structured = None
+
         return Recipe(
             id=str(row["id"]),
             name=row["name"],
             description=row["description"],
             ingredients=json.loads(row["ingredients"]) if row["ingredients"] else [],
             ingredients_raw=json.loads(row["ingredients_raw"]) if row["ingredients_raw"] else [],
+            ingredients_structured=ingredients_structured,
             steps=json.loads(row["steps"]) if row["steps"] else [],
             servings=row["servings"] or 4,
             serving_size=row["serving_size"] or "",
