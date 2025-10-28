@@ -9,10 +9,12 @@ import os
 import sys
 import json
 from typing import List, Dict, Any
+from datetime import datetime, timedelta
 
 from anthropic import Anthropic
 
-from main import MealPlanningAssistant
+from src.main import MealPlanningAssistant
+from src.data.models import PlannedMeal, MealPlan
 
 
 class MealPlanningChatbot:
@@ -38,6 +40,76 @@ class MealPlanningChatbot:
         # Current context
         self.current_meal_plan_id = None
         self.current_shopping_list_id = None
+
+    def _select_recipes_with_llm(self, recipes: List, num_needed: int, recent_meals: List = None) -> List:
+        """
+        Use LLM to intelligently select recipes considering variety and preferences.
+
+        Args:
+            recipes: List of Recipe objects to choose from
+            num_needed: Number of recipes to select
+            recent_meals: Optional list of recent meal names for variety
+
+        Returns:
+            List of selected Recipe objects
+        """
+        if len(recipes) <= num_needed:
+            return recipes
+
+        # Format recipes compactly for LLM
+        recipes_text = []
+        for i, r in enumerate(recipes, 1):
+            ing_count = len(r.get_ingredients()) if r.has_structured_ingredients() else len(r.ingredients_raw)
+            recipes_text.append(
+                f"{i}. {r.name} (ID: {r.id})\n"
+                f"   Ingredients: {ing_count} items\n"
+                f"   Tags: {', '.join(r.tags[:5])}"
+            )
+
+        recent_text = ""
+        if recent_meals:
+            recent_text = f"\nRecent meals (avoid similar):\n" + "\n".join(f"- {m}" for m in recent_meals[:10])
+
+        prompt = f"""Select {num_needed} recipes from the candidates below that would make a varied, balanced meal plan.
+
+Goals:
+- Add variety (different cuisines, cooking methods, proteins)
+- Avoid repeating similar dishes
+- Create an appealing week of meals
+
+{recent_text}
+
+Candidates ({len(recipes)} recipes):
+{chr(10).join(recipes_text)}
+
+Return ONLY a JSON array of {num_needed} recipe IDs (no other text):
+["id1", "id2", ...]"""
+
+        try:
+            response = self.client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            # Extract JSON from response
+            content = response.content[0].text.strip()
+            # Remove markdown code blocks if present
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            content = content.strip()
+
+            selected_ids = json.loads(content)
+
+            # Return recipes matching selected IDs
+            return [r for r in recipes if r.id in selected_ids][:num_needed]
+
+        except Exception as e:
+            # Fallback: just return first N recipes
+            print(f"LLM selection failed: {e}, using fallback")
+            return recipes[:num_needed]
 
     def get_system_prompt(self) -> str:
         """Get system prompt for the LLM."""
@@ -95,6 +167,33 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                             "default": 7,
                         },
                     },
+                },
+            },
+            {
+                "name": "plan_meals_smart",
+                "description": "Create a meal plan using enriched recipe database with smart filtering. Supports allergen filtering, time constraints, and natural language requests. USE THIS for custom planning requests.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "num_days": {
+                            "type": "integer",
+                            "description": "Number of days to plan (e.g., 4 for Mon-Thu, 7 for full week)",
+                        },
+                        "search_query": {
+                            "type": "string",
+                            "description": "Search keywords (e.g., 'chicken', 'pasta', 'quick dinners')",
+                        },
+                        "exclude_allergens": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Allergens to avoid: 'dairy', 'gluten', 'nuts', 'shellfish', 'eggs'",
+                        },
+                        "max_time": {
+                            "type": "integer",
+                            "description": "Maximum cooking time in minutes",
+                        },
+                    },
+                    "required": ["num_days"],
                 },
             },
             {
@@ -224,6 +323,76 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     return output
                 else:
                     return f"Error: {result.get('error')}"
+
+            elif tool_name == "plan_meals_smart":
+                # 1. Extract/generate dates
+                num_days = tool_input.get("num_days", 7)
+                today = datetime.now().date()
+                dates = [(today + timedelta(days=i)).isoformat() for i in range(num_days)]
+
+                # 2. SQL search for candidates
+                search_query = tool_input.get("search_query", "")
+                candidates = self.assistant.db.search_recipes(
+                    query=search_query,
+                    max_time=tool_input.get("max_time"),
+                    limit=100
+                )
+
+                if not candidates:
+                    return f"No recipes found matching '{search_query}'. Try different search terms."
+
+                # 3. Filter by allergens using structured ingredients
+                exclude_allergens = tool_input.get("exclude_allergens", [])
+                filtered = [
+                    r for r in candidates
+                    if r.has_structured_ingredients()
+                    and not any(r.has_allergen(a) for a in exclude_allergens)
+                ]
+
+                if not filtered:
+                    return f"Found {len(candidates)} recipes, but none without {', '.join(exclude_allergens)}. Try relaxing constraints."
+
+                if len(filtered) < num_days:
+                    return f"Only found {len(filtered)} recipes matching all constraints, need {num_days}. Try relaxing constraints or reducing days."
+
+                # 4. LLM selects with variety
+                recent_meals = self.assistant.db.get_meal_history(weeks_back=2)
+                recent_names = [m.recipe_name for m in recent_meals] if recent_meals else []
+                selected = self._select_recipes_with_llm(filtered, num_days, recent_names)
+
+                # 5. Create PlannedMeal objects with embedded recipes
+                meals = [
+                    PlannedMeal(
+                        date=date,
+                        meal_type="dinner",
+                        recipe=recipe,
+                        servings=4
+                    )
+                    for date, recipe in zip(dates, selected)
+                ]
+
+                # 6. Create and save MealPlan
+                plan = MealPlan(
+                    week_of=dates[0],
+                    meals=meals,
+                    preferences_applied=exclude_allergens  # Track what allergens were avoided
+                )
+                plan_id = self.assistant.db.save_meal_plan(plan)
+                self.current_meal_plan_id = plan_id
+
+                # 7. Return summary
+                total_ingredients = len(plan.get_all_ingredients())
+                all_allergens = plan.get_all_allergens()
+                allergen_str = f", allergens: {', '.join(all_allergens)}" if all_allergens else ", allergen-free"
+
+                output = f"✓ Created {num_days}-day meal plan!\n\n"
+                output += "Meals:\n"
+                for meal in plan.meals:
+                    ing_count = len(meal.recipe.get_ingredients()) if meal.recipe.has_structured_ingredients() else "?"
+                    output += f"- {meal.date}: {meal.recipe.name} ({ing_count} ingredients)\n"
+                output += f"\n📊 {total_ingredients} total ingredients{allergen_str}"
+
+                return output
 
             elif tool_name == "create_shopping_list":
                 meal_plan_id = tool_input.get("meal_plan_id") or self.current_meal_plan_id
