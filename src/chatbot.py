@@ -52,6 +52,22 @@ class MealPlanningChatbot:
         # Verbose mode for debugging
         self.verbose = verbose
 
+        # Auto-load most recent plan
+        self._load_most_recent_plan()
+
+    def _load_most_recent_plan(self):
+        """Load the most recent meal plan automatically on startup."""
+        try:
+            recent_plans = self.assistant.db.get_recent_meal_plans(limit=1)
+            if recent_plans:
+                self.last_meal_plan = recent_plans[0]
+                self.current_meal_plan_id = recent_plans[0].id
+                if self.verbose:
+                    print(f"📋 Resumed plan for week of {recent_plans[0].week_of}")
+        except Exception as e:
+            if self.verbose:
+                print(f"Note: Could not load recent plan: {e}")
+
     def _select_recipes_with_llm(self, recipes: List, num_needed: int, recent_meals: List = None) -> List:
         """
         Use LLM to intelligently select recipes considering variety and preferences.
@@ -161,6 +177,15 @@ When analyzing recipes:
 - If asked about ingredients/allergens, use get_cooking_guide to check the ingredients
 - ANALYZE the tool results and ANSWER the user's question directly
 - Don't just display tool results - use them to answer what was asked
+
+Working with cached meal plans:
+- After creating or loading a plan, it is cached in memory with full Recipe objects
+- For follow-up questions about the CURRENT plan, use the new cache-based tools:
+  * check_allergens - "Does my plan have shellfish?" (instant, no DB queries)
+  * list_meals_by_allergen - "Which meals have dairy?" (instant, no DB queries)
+  * get_day_ingredients - "What do I need for Monday?" (instant, no DB queries)
+- These tools work on the cached plan and are MUCH faster than re-fetching data
+- Only use get_cooking_guide for recipes that are NOT in the current plan
 
 IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy explanations. Confirm actions with 1-2 sentences max. BUT ALWAYS answer the user's actual question based on tool results."""
 
@@ -319,6 +344,48 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     "required": ["date", "requirements"],
                 },
             },
+            {
+                "name": "check_allergens",
+                "description": "Check if the current meal plan contains specific allergens. Uses the cached meal plan for instant results. Only works after a plan has been created or loaded.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "allergen": {
+                            "type": "string",
+                            "description": "Allergen to check for (e.g., 'dairy', 'shellfish', 'nuts', 'gluten', 'eggs')",
+                        },
+                    },
+                    "required": ["allergen"],
+                },
+            },
+            {
+                "name": "list_meals_by_allergen",
+                "description": "List all meals in the current plan that contain a specific allergen. Returns detailed meal information.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "allergen": {
+                            "type": "string",
+                            "description": "Allergen to filter by",
+                        },
+                    },
+                    "required": ["allergen"],
+                },
+            },
+            {
+                "name": "get_day_ingredients",
+                "description": "Get all ingredients needed for a specific day from the current meal plan. Useful for daily cooking prep.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Date in YYYY-MM-DD format (e.g., '2025-10-29')",
+                        },
+                    },
+                    "required": ["date"],
+                },
+            },
         ]
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
@@ -415,6 +482,12 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 plan_id = self.assistant.db.save_meal_plan(plan)
                 self.current_meal_plan_id = plan_id
 
+                # Cache the plan in memory for follow-up questions
+                self.last_meal_plan = plan
+
+                if self.verbose:
+                    print(f"      → Cached plan in memory ({len(plan.meals)} meals with embedded recipes)")
+
                 # 7. Return summary
                 total_ingredients = len(plan.get_all_ingredients())
                 all_allergens = plan.get_all_allergens()
@@ -503,6 +576,14 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 if not self.current_meal_plan_id:
                     return "No active meal plan. Would you like me to create one?"
 
+                # Load plan from DB and cache it
+                meal_plan = self.assistant.db.get_meal_plan(self.current_meal_plan_id)
+                if meal_plan:
+                    self.last_meal_plan = meal_plan
+                    if self.verbose:
+                        print(f"      → Loaded and cached plan ({len(meal_plan.meals)} meals)")
+
+                # Get explanation from agent
                 explanation = self.assistant.planning_agent.explain_plan(
                     self.current_meal_plan_id
                 )
@@ -535,6 +616,86 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     return output
                 else:
                     return f"Error: {result.get('error')}"
+
+            elif tool_name == "check_allergens":
+                if not self.last_meal_plan:
+                    return "No meal plan loaded. Please create or load a plan first."
+
+                allergen = tool_input["allergen"].lower()
+                all_allergens = self.last_meal_plan.get_all_allergens()
+
+                if self.verbose:
+                    print(f"      → Checking cached plan for '{allergen}' (0 DB queries)")
+
+                if allergen in all_allergens:
+                    meals = self.last_meal_plan.get_meals_with_allergen(allergen)
+                    meal_names = [meal.recipe.name for meal in meals]
+                    return f"⚠️  Found {allergen} in {len(meals)} meal(s): {', '.join(meal_names)}"
+                else:
+                    return f"✓ No {allergen} detected in your meal plan!"
+
+            elif tool_name == "list_meals_by_allergen":
+                if not self.last_meal_plan:
+                    return "No meal plan loaded. Please create or load a plan first."
+
+                allergen = tool_input["allergen"].lower()
+                meals = self.last_meal_plan.get_meals_with_allergen(allergen)
+
+                if self.verbose:
+                    print(f"      → Filtering cached plan for '{allergen}' (0 DB queries)")
+
+                if not meals:
+                    return f"No meals contain {allergen}."
+
+                output = f"Meals with {allergen}:\n\n"
+                for meal in meals:
+                    output += f"- {meal.date}: {meal.recipe.name}\n"
+                    # Show which ingredients contain the allergen
+                    allergen_ings = [
+                        ing.name for ing in meal.recipe.get_ingredients()
+                        if allergen in ing.allergens
+                    ]
+                    if allergen_ings:
+                        output += f"  Contains in: {', '.join(allergen_ings[:3])}"
+                        if len(allergen_ings) > 3:
+                            output += f" (+{len(allergen_ings) - 3} more)"
+                        output += "\n"
+                return output
+
+            elif tool_name == "get_day_ingredients":
+                if not self.last_meal_plan:
+                    return "No meal plan loaded. Please create or load a plan first."
+
+                date = tool_input["date"]
+                meals = self.last_meal_plan.get_meals_for_day(date)
+
+                if self.verbose:
+                    print(f"      → Getting ingredients for {date} from cached plan (0 DB queries)")
+
+                if not meals:
+                    return f"No meals found for {date}. Check your plan dates."
+
+                # Get ingredients from all meals on this day
+                all_ingredients = []
+                meal_names = []
+                for meal in meals:
+                    meal_names.append(meal.recipe.name)
+                    ingredients = meal.recipe.get_ingredients()
+                    if ingredients:
+                        all_ingredients.extend(ingredients)
+
+                if not all_ingredients:
+                    return f"No structured ingredients available for {', '.join(meal_names)}"
+
+                output = f"Ingredients for {', '.join(meal_names)} ({date}):\n\n"
+                for ing in all_ingredients:
+                    output += f"- {ing.quantity} {ing.unit} {ing.name}"
+                    if ing.preparation:
+                        output += f", {ing.preparation}"
+                    output += "\n"
+
+                output += f"\nTotal: {len(all_ingredients)} ingredients"
+                return output
 
             else:
                 return f"Unknown tool: {tool_name}"
