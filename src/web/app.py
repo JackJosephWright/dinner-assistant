@@ -245,12 +245,16 @@ def plan_page():
                 enriched_meals = []
                 for meal in meal_plan.meals:
                     meal_dict = meal.to_dict()
-                    # Recipe is already embedded in PlannedMeal object
+                    # Flatten recipe fields for frontend compatibility
                     if meal.recipe:
+                        meal_dict['recipe_id'] = meal.recipe.id
+                        meal_dict['recipe_name'] = meal.recipe.name
                         meal_dict['description'] = meal.recipe.description
                         meal_dict['estimated_time'] = meal.recipe.estimated_time
                         meal_dict['cuisine'] = meal.recipe.cuisine
                         meal_dict['difficulty'] = meal.recipe.difficulty
+                    # Rename 'date' to 'meal_date' for clarity
+                    meal_dict['meal_date'] = meal_dict.pop('date', None)
                     enriched_meals.append(meal_dict)
 
                 current_plan = {
@@ -770,12 +774,16 @@ def api_get_current_plan():
         enriched_meals = []
         for meal in meal_plan.meals:
             meal_dict = meal.to_dict()
-            # Recipe is already embedded in PlannedMeal object
+            # Flatten recipe fields for frontend compatibility
             if meal.recipe:
+                meal_dict['recipe_id'] = meal.recipe.id
+                meal_dict['recipe_name'] = meal.recipe.name
                 meal_dict['description'] = meal.recipe.description
                 meal_dict['estimated_time'] = meal.recipe.estimated_time
                 meal_dict['cuisine'] = meal.recipe.cuisine
                 meal_dict['difficulty'] = meal.recipe.difficulty
+            # Rename 'date' to 'meal_date' for clarity
+            meal_dict['meal_date'] = meal_dict.pop('date', None)
             enriched_meals.append(meal_dict)
 
         return jsonify({
