@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, session, Response
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path
 project_root = os.path.join(os.path.dirname(__file__), '..', '..')
