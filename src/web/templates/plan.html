@@ -334,10 +334,10 @@
                         <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
                             <div class="flex justify-between items-start">
                                 <div class="flex-1">
-                                    <div class="flex items-center mb-1">
-                                        <span class="font-semibold text-gray-900">{{ meal.meal_date.strftime('%A, %B %d') if meal.meal_date else meal.date }}</span>
+                                    <h3 class="text-lg font-medium text-indigo-600 mb-1">{{ meal.recipe_name }}</h3>
+                                    <div class="flex items-center mb-2">
+                                        <span class="text-sm font-semibold text-gray-600">{{ meal.meal_date.strftime('%A, %B %d') if meal.meal_date else meal.date }}</span>
                                     </div>
-                                    <h3 class="text-lg font-medium text-indigo-600">{{ meal.recipe_name }}</h3>
                                     {% if meal.description %}
                                     <p class="text-sm text-gray-700 mt-2">{{ meal.description[:150] }}{% if meal.description|length > 150 %}...{% endif %}</p>
                                     {% endif %}
@@ -1067,10 +1067,10 @@ async function updateMealPlanDisplay() {
                     <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow fade-in">
                         <div class="flex justify-between items-start">
                             <div class="flex-1">
-                                <div class="flex items-center mb-1">
-                                    <span class="font-semibold text-gray-900">${dateStr}</span>
+                                <h3 class="text-lg font-medium text-indigo-600 mb-1">${meal.recipe_name}</h3>
+                                <div class="flex items-center mb-2">
+                                    <span class="text-sm font-semibold text-gray-600">${dateStr}</span>
                                 </div>
-                                <h3 class="text-lg font-medium text-indigo-600">${meal.recipe_name}</h3>
                                 ${meal.description ? `
                                 <p class="text-sm text-gray-700 mt-2">${meal.description.substring(0, 150)}${meal.description.length > 150 ? '...' : ''}</p>
                                 ` : ''}
