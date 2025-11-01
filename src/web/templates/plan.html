@@ -336,7 +336,7 @@
                                 <div class="flex-1">
                                     <h3 class="text-lg font-medium text-indigo-600 mb-1">{{ meal.recipe_name }}</h3>
                                     <div class="flex items-center mb-2">
-                                        <span class="text-sm font-semibold text-gray-600">{{ meal.meal_date.strftime('%A, %B %d') if meal.meal_date else meal.date }}</span>
+                                        <span class="text-sm font-semibold text-gray-600">{{ meal.meal_date }}</span>
                                     </div>
                                     {% if meal.description %}
                                     <p class="text-sm text-gray-700 mt-2">{{ meal.description[:150] }}{% if meal.description|length > 150 %}...{% endif %}</p>
