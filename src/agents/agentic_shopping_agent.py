@@ -176,18 +176,32 @@ class AgenticShoppingAgent:
             raw_ingredients = []
 
             for planned_meal in meal_plan.meals:
-                recipe = self.db.get_recipe(planned_meal.recipe_id)
+                # Use embedded recipe from PlannedMeal (Phase 2 enhancement)
+                recipe = planned_meal.recipe
                 if not recipe:
                     continue
 
-                for ingredient_raw in recipe.ingredients_raw:
-                    raw_ingredients.append({
-                        "ingredient": ingredient_raw,
-                        "recipe": planned_meal.recipe_name,
-                    })
+                # Use structured ingredients if available (enriched recipes)
+                if recipe.ingredients_structured:
+                    for ingredient in recipe.ingredients_structured:
+                        # Structured ingredient already has quantity, unit, name, category
+                        raw_ingredients.append({
+                            "ingredient": f"{ingredient.quantity} {ingredient.unit} {ingredient.name}".strip(),
+                            "recipe": recipe.name,
+                            "category": ingredient.category,  # Already categorized!
+                            "allergens": ingredient.allergens,  # Already tracked!
+                        })
+                else:
+                    # Fallback to raw ingredients for non-enriched recipes
+                    for ingredient_raw in recipe.ingredients_raw:
+                        raw_ingredients.append({
+                            "ingredient": ingredient_raw,
+                            "recipe": recipe.name,
+                        })
 
             state["raw_ingredients"] = raw_ingredients
-            logger.info(f"Collected {len(raw_ingredients)} raw ingredients from {len(meal_plan.meals)} recipes")
+            enriched_count = sum(1 for m in meal_plan.meals if m.recipe and m.recipe.ingredients_structured)
+            logger.info(f"Collected {len(raw_ingredients)} ingredients from {len(meal_plan.meals)} recipes ({enriched_count} enriched)")
 
             return state
 
@@ -215,9 +229,17 @@ class AgenticShoppingAgent:
                 return state
 
             # Format ingredients for LLM
+            # For enriched recipes with categories, include them to guide LLM
             ingredients_text = ""
+            has_categories = any("category" in item for item in raw_ingredients)
+
             for i, item in enumerate(raw_ingredients, 1):
-                ingredients_text += f"{i}. {item['ingredient']} (from: {item['recipe']})\n"
+                if "category" in item and item["category"]:
+                    # Enriched ingredient with pre-assigned category
+                    ingredients_text += f"{i}. {item['ingredient']} [{item['category']}] (from: {item['recipe']})\n"
+                else:
+                    # Non-enriched ingredient - LLM will categorize
+                    ingredients_text += f"{i}. {item['ingredient']} (from: {item['recipe']})\n"
 
             # Check for scaling instructions
             scaling_instructions = state.get("scaling_instructions", "")
@@ -234,9 +256,13 @@ quantities from that recipe by 2 before consolidating with other ingredients.
 """
 
             # Ask LLM to consolidate (optimized: shorter prompt, fewer tokens)
+            category_note = ""
+            if has_categories:
+                category_note = "\n\nNote: Some ingredients already have categories [in brackets] - use those categories."
+
             prompt = f"""Consolidate these recipe ingredients into a shopping list:
 
-{ingredients_text}{scaling_note}
+{ingredients_text}{category_note}{scaling_note}
 
 Merge duplicates, normalize names, categorize by store section (produce/meat/seafood/dairy/pantry/frozen/bakery/other).
 
