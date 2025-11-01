@@ -7,6 +7,8 @@ Fixtures are reusable test setup that can be injected into tests.
 import pytest
 import tempfile
 import shutil
+import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -128,3 +130,71 @@ def sample_meal_plan():
         preferences_applied=["variety", "time_constraints"],
         created_at=datetime(2025, 10, 20, 10, 0, 0),
     )
+
+
+# ============================================================================
+# Playwright Web Testing Fixtures
+# ============================================================================
+
+@pytest.fixture(scope="session")
+def flask_app():
+    """
+    Start Flask app in background for web testing.
+
+    Yields the base URL where the app is running.
+    Automatically stops the server when tests complete.
+    """
+    # Start Flask server in background
+    flask_process = subprocess.Popen(
+        ["python3", "src/web/app.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd="/home/jack_wright/dinner-assistant"
+    )
+
+    # Wait for server to start
+    time.sleep(3)
+
+    # Yield the base URL
+    base_url = "http://localhost:5000"
+    yield base_url
+
+    # Cleanup: stop the server
+    flask_process.terminate()
+    flask_process.wait(timeout=5)
+
+
+@pytest.fixture(scope="function")
+def browser_context_args(browser_context_args):
+    """
+    Configure Playwright browser context for headed testing.
+
+    Returns:
+        dict: Browser context configuration with viewport and slowmo settings.
+    """
+    return {
+        **browser_context_args,
+        "viewport": {
+            "width": 1920,
+            "height": 1080,
+        },
+        "ignore_https_errors": True,
+    }
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args):
+    """
+    Configure browser launch args to use headless mode by default.
+    This helps avoid dependency issues on systems without full GUI support.
+    """
+    return {
+        **browser_type_launch_args,
+        "headless": True,
+        "args": [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ],
+    }
