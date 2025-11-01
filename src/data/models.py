@@ -637,14 +637,88 @@ class MealPlan:
 
 
 @dataclass
+class IngredientContribution:
+    """Track a single source's contribution to a grocery item."""
+
+    recipe_name: str     # "Grilled Chicken" or "User" (for extras)
+    quantity: str        # "2 lbs" (display format)
+    unit: str           # "lbs", "cups", "count", etc.
+    amount: float       # 2.0 (for math)
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "recipe_name": self.recipe_name,
+            "quantity": self.quantity,
+            "unit": self.unit,
+            "amount": self.amount,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "IngredientContribution":
+        """Create IngredientContribution from dictionary."""
+        return cls(**data)
+
+
+@dataclass
 class GroceryItem:
-    """Single item on a grocery list."""
+    """Single item on a grocery list with contribution tracking."""
 
     name: str  # "Ground beef"
-    quantity: str  # "2 lbs"
+    quantity: str  # "2 lbs" (total, display format)
     category: str  # "meat", "produce", "dairy", etc.
-    recipe_sources: List[str]  # Recipe names that need this ingredient
+    recipe_sources: List[str]  # Recipe names that need this ingredient (backward compat)
     notes: Optional[str] = None
+    contributions: List[IngredientContribution] = field(default_factory=list)  # Track sources
+
+    def add_contribution(self, recipe_name: str, quantity: str, unit: str, amount: float):
+        """
+        Add a contribution from a recipe or user.
+
+        Args:
+            recipe_name: Source name ("Grilled Chicken" or "User")
+            quantity: Display format ("2 lbs")
+            unit: Unit type ("lbs", "cups", etc.)
+            amount: Numeric amount for math (2.0)
+        """
+        contribution = IngredientContribution(recipe_name, quantity, unit, amount)
+        self.contributions.append(contribution)
+        self._recalculate_total()
+        self._update_recipe_sources()
+
+    def remove_contribution(self, recipe_name: str):
+        """
+        Remove all contributions from a specific recipe.
+
+        Args:
+            recipe_name: Name of recipe to remove
+        """
+        self.contributions = [
+            c for c in self.contributions
+            if c.recipe_name != recipe_name
+        ]
+        self._recalculate_total()
+        self._update_recipe_sources()
+
+    def _recalculate_total(self):
+        """Recalculate total quantity from all contributions."""
+        if not self.contributions:
+            self.quantity = "0"
+            return
+
+        # Sum amounts (assuming same unit for now - will add conversion later)
+        total_amount = sum(c.amount for c in self.contributions)
+        unit = self.contributions[0].unit if self.contributions else ""
+
+        # Format display string
+        if total_amount == int(total_amount):
+            self.quantity = f"{int(total_amount)} {unit}".strip()
+        else:
+            self.quantity = f"{total_amount:.1f} {unit}".strip()
+
+    def _update_recipe_sources(self):
+        """Update recipe_sources list from contributions (backward compat)."""
+        self.recipe_sources = list(set(c.recipe_name for c in self.contributions))
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
@@ -654,12 +728,42 @@ class GroceryItem:
             "category": self.category,
             "recipe_sources": self.recipe_sources,
             "notes": self.notes,
+            "contributions": [c.to_dict() for c in self.contributions],
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "GroceryItem":
         """Create GroceryItem from dictionary."""
-        return cls(**data)
+        # Handle old format (no contributions)
+        if "contributions" not in data:
+            # Create single contribution from recipe_sources
+            contributions = []
+            if data.get("recipe_sources"):
+                # Split quantity equally among sources (best guess)
+                for source in data.get("recipe_sources", []):
+                    contributions.append(
+                        IngredientContribution(
+                            recipe_name=source,
+                            quantity=data.get("quantity", ""),
+                            unit="unknown",
+                            amount=0.0
+                        )
+                    )
+        else:
+            # Parse contributions from dict format
+            contributions = [
+                IngredientContribution.from_dict(c) if isinstance(c, dict) else c
+                for c in data.get("contributions", [])
+            ]
+
+        return cls(
+            name=data["name"],
+            quantity=data["quantity"],
+            category=data["category"],
+            recipe_sources=data.get("recipe_sources", []),
+            notes=data.get("notes"),
+            contributions=contributions,
+        )
 
 
 @dataclass
