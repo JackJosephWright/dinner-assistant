@@ -26,6 +26,15 @@ else
 fi
 
 echo ""
+echo "Checking for existing Flask server on port 5000..."
+EXISTING_PID=$(lsof -ti:5000 2>/dev/null)
+if [ -n "$EXISTING_PID" ]; then
+    echo "Found Flask running (PID: $EXISTING_PID). Stopping it..."
+    kill -9 $EXISTING_PID 2>/dev/null || true
+    sleep 1
+    echo "✓ Stopped existing Flask server"
+fi
+
 echo "Starting Flask server in background..."
 python3 src/web/app.py &
 FLASK_PID=$!
@@ -43,6 +52,17 @@ fi
 
 echo "✓ Flask server running"
 echo ""
+
+# Open browser to view the page
+echo "Opening browser to http://localhost:5000/plan ..."
+if command -v xdg-open > /dev/null; then
+    xdg-open "http://localhost:5000/plan" &
+elif command -v wslview > /dev/null; then
+    wslview "http://localhost:5000/plan" &
+else
+    echo "⚠ Could not auto-open browser. Please open http://localhost:5000/plan manually."
+fi
+sleep 2
 
 # Run tests
 echo "Running Playwright tests (headed mode with 500ms slowmo)..."

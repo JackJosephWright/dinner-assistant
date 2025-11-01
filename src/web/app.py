@@ -241,20 +241,16 @@ def plan_page():
         try:
             meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
             if meal_plan:
-                # Enrich meals with recipe details - OPTIMIZED: parallel fetch all recipes
-                recipe_ids = [meal.recipe_id for meal in meal_plan.meals]
-                recipes_map = fetch_recipes_parallel(recipe_ids)
-
+                # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
                 enriched_meals = []
                 for meal in meal_plan.meals:
                     meal_dict = meal.to_dict()
-                    # Get recipe from map (no additional query)
-                    recipe = recipes_map.get(meal.recipe_id)
-                    if recipe:
-                        meal_dict['description'] = recipe.description
-                        meal_dict['estimated_time'] = recipe.estimated_time
-                        meal_dict['cuisine'] = recipe.cuisine
-                        meal_dict['difficulty'] = recipe.difficulty
+                    # Recipe is already embedded in PlannedMeal object
+                    if meal.recipe:
+                        meal_dict['description'] = meal.recipe.description
+                        meal_dict['estimated_time'] = meal.recipe.estimated_time
+                        meal_dict['cuisine'] = meal.recipe.cuisine
+                        meal_dict['difficulty'] = meal.recipe.difficulty
                     enriched_meals.append(meal_dict)
 
                 current_plan = {
@@ -769,20 +765,17 @@ def api_get_current_plan():
         if not meal_plan:
             return jsonify({"success": False, "error": "Meal plan not found"}), 404
 
-        # Enrich meals with recipe details - OPTIMIZED: parallel fetch all recipes
-        recipe_ids = [meal.recipe_id for meal in meal_plan.meals]
-        recipes_map = fetch_recipes_parallel(recipe_ids)
-
+        # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
+        # No need to fetch recipes separately - they're already embedded!
         enriched_meals = []
         for meal in meal_plan.meals:
             meal_dict = meal.to_dict()
-            # Get recipe from map (no additional query)
-            recipe = recipes_map.get(meal.recipe_id)
-            if recipe:
-                meal_dict['description'] = recipe.description
-                meal_dict['estimated_time'] = recipe.estimated_time
-                meal_dict['cuisine'] = recipe.cuisine
-                meal_dict['difficulty'] = recipe.difficulty
+            # Recipe is already embedded in PlannedMeal object
+            if meal.recipe:
+                meal_dict['description'] = meal.recipe.description
+                meal_dict['estimated_time'] = meal.recipe.estimated_time
+                meal_dict['cuisine'] = meal.recipe.cuisine
+                meal_dict['difficulty'] = meal.recipe.difficulty
             enriched_meals.append(meal_dict)
 
         return jsonify({
@@ -826,13 +819,11 @@ def api_preload_plan_data():
             meal_plan = assistant.db.get_meal_plan(meal_plan_id)
             if meal_plan:
                 logger.info(f"Preloading {len(meal_plan.meals)} recipes for cook page...")
-                recipe_ids = [meal.recipe_id for meal in meal_plan.meals]
+                # Use embedded Recipe objects (Phase 2 enhancement)
+                recipe_ids = [meal.recipe.id for meal in meal_plan.meals if meal.recipe]
+                recipes_preloaded = len(recipe_ids)
 
-                # Fetch all recipes in parallel
-                recipes_map = fetch_recipes_parallel(recipe_ids)
-                recipes_preloaded = len(recipes_map)
-
-                # Also preload cooking guides for each recipe
+                # Preload cooking guides for each recipe
                 def fetch_cooking_guide(recipe_id):
                     try:
                         result = assistant.get_cooking_guide(recipe_id)
