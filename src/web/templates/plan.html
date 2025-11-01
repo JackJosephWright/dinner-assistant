@@ -399,10 +399,11 @@ function formatDateForInput(date) {
 function getDayLabels(startDate) {
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const labels = [];
-    const date = new Date(startDate);
 
     for (let i = 0; i < 7; i++) {
-        const dayNum = (date.getDay() + i) % 7;
+        const date = new Date(startDate);
+        date.setDate(startDate.getDate() + i);  // Add i days to start date
+        const dayNum = date.getDay();  // Get day of week for this date
         labels.push(dayNames[dayNum]);
     }
 
