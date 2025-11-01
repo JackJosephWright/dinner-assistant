@@ -437,7 +437,9 @@ function initializeWeekSelector() {
     // Listen for date changes
     weekInput.addEventListener('change', (e) => {
         if (e.target.value) {
-            currentStartDate = new Date(e.target.value);
+            // Parse date as local date (not UTC) to avoid timezone issues
+            const [year, month, day] = e.target.value.split('-').map(Number);
+            currentStartDate = new Date(year, month - 1, day);  // month is 0-indexed
             renderDayButtons(currentStartDate);
         } else {
             // If cleared, reset to next Monday
