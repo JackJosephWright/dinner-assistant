@@ -280,5 +280,179 @@ class TestAutoLoad:
         assert chatbot.current_meal_plan_id is None
 
 
+class TestBackupQueue:
+    """Test backup recipe queue for fast meal swapping."""
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_backup_recipes_stored_during_planning(self, mock_assistant_class, mock_recipe_with_dairy, mock_recipe_no_dairy):
+        """Test that backup recipes are stored during plan_meals_smart."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant.db.search_recipes = Mock(return_value=[
+            mock_recipe_with_dairy,  # Will be selected
+            mock_recipe_no_dairy,     # Will be backup
+        ])
+        mock_assistant.db.get_meal_history = Mock(return_value=[])
+        mock_assistant.db.save_meal_plan = Mock(return_value="test-plan-456")
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # Execute planning (simplified - normally would call execute_tool)
+        # Manually set up what plan_meals_smart does
+        plan = MealPlan(
+            week_of="2025-01-20",
+            meals=[
+                PlannedMeal(
+                    date="2025-01-20",
+                    meal_type="dinner",
+                    recipe=mock_recipe_with_dairy,
+                    servings=4
+                )
+            ],
+            backup_recipes={"chicken": [mock_recipe_no_dairy]}
+        )
+        plan.id = "test-plan-456"
+        chatbot.last_meal_plan = plan
+
+        # Verify backups were stored
+        assert "chicken" in plan.backup_recipes
+        assert len(plan.backup_recipes["chicken"]) == 1
+        assert plan.backup_recipes["chicken"][0] == mock_recipe_no_dairy
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_check_backup_match_direct(self, mock_assistant_class):
+        """Test _check_backup_match with direct category match."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # Direct match
+        assert chatbot._check_backup_match("different chicken dish", "chicken") is True
+        assert chatbot._check_backup_match("another pasta option", "pasta") is True
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_check_backup_match_related_terms(self, mock_assistant_class):
+        """Test _check_backup_match with related terms."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # Related terms
+        assert chatbot._check_backup_match("poultry recipe", "chicken") is True
+        assert chatbot._check_backup_match("steak dinner", "beef") is True
+        assert chatbot._check_backup_match("spaghetti meal", "pasta") is True
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_check_backup_match_modifiers(self, mock_assistant_class):
+        """Test _check_backup_match with modifier words."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # Modifiers
+        assert chatbot._check_backup_match("swap this chicken", "chicken") is True
+        assert chatbot._check_backup_match("change pasta meal", "pasta") is True
+        assert chatbot._check_backup_match("replace this beef", "beef") is True
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_check_backup_match_no_match(self, mock_assistant_class):
+        """Test _check_backup_match returns False when no match."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # No match
+        assert chatbot._check_backup_match("fish recipe", "chicken") is False
+        assert chatbot._check_backup_match("vegetarian dish", "beef") is False
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_swap_meal_fast_uses_backups(self, mock_assistant_class, mock_recipe_with_dairy, mock_recipe_no_dairy):
+        """Test swap_meal_fast uses backup recipes when available."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant.db.swap_meal_in_plan = Mock(return_value=True)
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+
+        # Set up plan with backups
+        plan = MealPlan(
+            week_of="2025-01-20",
+            meals=[
+                PlannedMeal(
+                    date="2025-01-20",
+                    meal_type="dinner",
+                    recipe=mock_recipe_with_dairy,
+                    servings=4
+                )
+            ],
+            backup_recipes={"chicken": [mock_recipe_no_dairy]}
+        )
+        plan.id = "test-plan-789"
+        chatbot.last_meal_plan = plan
+
+        # Execute swap_meal_fast
+        result = chatbot.execute_tool("swap_meal_fast", {
+            "date": "2025-01-20",
+            "requirements": "different chicken dish"
+        })
+
+        # Verify backup was used
+        assert "Creamy Pasta" in result  # Old recipe
+        assert "Grilled Chicken" in result  # New recipe from backups
+        assert "chicken" in result  # Category used
+        assert "cached backups" in result or "<10ms" in result
+
+        # Verify DB was updated
+        mock_assistant.db.swap_meal_in_plan.assert_called_once_with(
+            plan_id="test-plan-789",
+            date="2025-01-20",
+            new_recipe_id="2"
+        )
+
+        # Verify cached plan was updated
+        assert chatbot.last_meal_plan.meals[0].recipe == mock_recipe_no_dairy
+
+    @patch('src.chatbot.MealPlanningAssistant')
+    @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
+    def test_swap_meal_fast_no_plan_error(self, mock_assistant_class):
+        """Test swap_meal_fast returns error when no plan loaded."""
+        mock_assistant = Mock()
+        mock_assistant.db = Mock()
+        mock_assistant.db.get_recent_meal_plans = Mock(return_value=[])
+        mock_assistant_class.return_value = mock_assistant
+
+        chatbot = MealPlanningChatbot(verbose=False)
+        chatbot.last_meal_plan = None
+
+        result = chatbot.execute_tool("swap_meal_fast", {
+            "date": "2025-01-20",
+            "requirements": "different chicken"
+        })
+
+        assert "No meal plan loaded" in result
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

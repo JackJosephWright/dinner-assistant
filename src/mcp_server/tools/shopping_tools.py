@@ -298,6 +298,78 @@ class ShoppingTools:
             logger.error(f"Error retrieving grocery list {list_id}: {e}")
             return None
 
+    def add_extra_items(
+        self,
+        grocery_list_id: str,
+        items: List[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """
+        Add extra items to an existing grocery list.
+
+        Args:
+            grocery_list_id: ID of the grocery list to update
+            items: List of items to add, each with format:
+                   {"name": "bananas", "quantity": "6", "category": "produce"}
+                   category is optional and will be auto-detected if not provided
+
+        Returns:
+            Dictionary with success status and updated grocery list
+        """
+        try:
+            # Get existing grocery list
+            grocery_list = self.db.get_grocery_list(grocery_list_id)
+            if not grocery_list:
+                return {
+                    "success": False,
+                    "error": "Grocery list not found"
+                }
+
+            # Parse and add each item
+            added_items = []
+            for item_data in items:
+                name = item_data.get("name", "").strip()
+                quantity = item_data.get("quantity", "1").strip()
+
+                if not name:
+                    continue
+
+                # Auto-detect category if not provided
+                category = item_data.get("category")
+                if not category:
+                    category = self._categorize_ingredient(name.lower())
+
+                # Create GroceryItem
+                extra_item = GroceryItem(
+                    name=name.title(),
+                    quantity=quantity,
+                    category=category,
+                    recipe_sources=["User request"],
+                    notes="Extra item (not from recipes)"
+                )
+
+                grocery_list.extra_items.append(extra_item)
+                added_items.append(extra_item)
+
+                logger.info(f"Added extra item: {name} ({quantity}) to grocery list {grocery_list_id}")
+
+            # Save updated grocery list
+            self.db.save_grocery_list(grocery_list)
+
+            return {
+                "success": True,
+                "grocery_list_id": grocery_list_id,
+                "added_items": [item.to_dict() for item in added_items],
+                "total_extra_items": len(grocery_list.extra_items),
+                "message": f"Added {len(added_items)} extra item(s) to your shopping list"
+            }
+
+        except Exception as e:
+            logger.error(f"Error adding extra items: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
 
 # Tool definitions for MCP registration
 SHOPPING_TOOL_DEFINITIONS = [
@@ -330,6 +402,47 @@ SHOPPING_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["list_id"],
+        },
+    },
+    {
+        "name": "add_extra_items",
+        "description": (
+            "Add extra items to an existing grocery list that aren't from recipes. "
+            "Use this when the user wants to add personal items like 'bananas', 'milk', or 'bread'. "
+            "The category will be auto-detected if not provided."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "grocery_list_id": {
+                    "type": "string",
+                    "description": "ID of the grocery list to add items to",
+                },
+                "items": {
+                    "type": "array",
+                    "description": "List of items to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the item (e.g., 'bananas')"
+                            },
+                            "quantity": {
+                                "type": "string",
+                                "description": "Quantity with unit (e.g., '6', '1 gallon', '2 loaves')"
+                            },
+                            "category": {
+                                "type": "string",
+                                "description": "Optional store section (produce/meat/dairy/pantry/bakery/frozen/other)",
+                                "enum": ["produce", "meat", "seafood", "dairy", "pantry", "bakery", "frozen", "other"]
+                            }
+                        },
+                        "required": ["name"]
+                    }
+                },
+            },
+            "required": ["grocery_list_id", "items"],
         },
     },
 ]

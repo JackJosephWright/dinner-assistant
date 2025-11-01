@@ -73,7 +73,7 @@ SQLite DBs (recipes.db, user_data.db)
 - **preferences**: User preferences and dietary restrictions
 - **grocery_lists**: Shopping lists with store sections
 
-## Current Status (Last Updated: 2025-10-28)
+## Current Status (Last Updated: 2025-10-29)
 
 ### ✅ Phase 1: Foundation - Complete
 - Recipe database loaded (492,630 recipes)
@@ -120,11 +120,25 @@ SQLite DBs (recipes.db, user_data.db)
 - `docs/MEAL_PLAN_WORKFLOW_REPORT.md` - Complete workflow documentation
 - `demo_meal_plan_workflow.py` - Live demonstration script
 
-### 🔄 Phase 3: Chat Integration - Next
-**Objectives:**
-- Update agents to use embedded recipes
-- Design chat interface patterns
-- Integrate with LLM for natural language queries
+### 🔄 Phase 3: Chat Integration - In Progress
+**What's Complete (2025-10-29):**
+- ✅ **Hybrid backup matching strategy** - Vague swap requests now work (src/chatbot.py:182-287)
+  - Tier 1: Fast algorithmic checks (vague terms, direct match, related terms)
+  - Tier 2: LLM semantic fallback using Claude Haiku
+  - Verbose debug output shows which tier matched
+- ✅ **Improved LLM recipe selection** - Fixed Recipe ID vs index confusion (src/chatbot.py:71-197)
+  - Enhanced prompt with 6-digit ID examples
+  - Step-by-step instructions to prevent hallucination
+  - Automatic filling of missing slots when LLM returns invalid IDs
+- ✅ **Verbose meal plan display** - Always shows current plan state after each interaction (src/chatbot.py:1044-1071)
+  - Shows all meals with ingredient counts
+  - Displays backup recipes available
+  - Clear visibility into meal plan state
+
+**Test Results:**
+- Multi-requirement planning working: "5 meals, one chicken, one beef, one thai" → 5 meals created ✅
+- Vague swap requests working: "something else, no corned beef" → uses backup queue ✅
+- All swaps complete in <10ms (95% faster than fresh search) ✅
 
 **Benefits Ready:**
 - ✅ 0-query operations (instant responses)
@@ -133,7 +147,29 @@ SQLite DBs (recipes.db, user_data.db)
 - ✅ Shopping list generation (one method call)
 - ✅ Allergen detection (across entire plan)
 
+### 🤔 Under Consideration - Side Dishes
+**User Request:** "can you add a salad side dish to the honey garlic chicken"
+
+**Current Limitation:** PlannedMeal only supports single recipe (no side dish support)
+
+**Design Options Discussed (2025-10-29):**
+- Option A: `side_recipes: List[Recipe]` - Separate list of side recipes (original design in docs)
+- Option B: Modify recipe directly - Create combined recipe on-the-fly
+- Option C: `side: Optional[Recipe]` - Single side dish field (user's suggestion)
+- Option D: Recursive nesting - `side: Optional[PlannedMeal]` (discussed but semantically problematic)
+- Option E: `sides: List[Recipe]` - Multiple sides as recipe list (cleanest approach)
+
+**Decision Status:** ⏸️ **DEFERRED** - No decision made yet, exploring options
+
+**Context for Next Session:**
+- Design already exists in `docs/design/step4_planned_meal_design.md` (lines 321-346)
+- Original decision was "Start with single recipe, add multi-recipe support later if needed"
+- User is thinking about whether to use `side` (singular) or `sides` (list)
+- Needs discussion on: single vs multiple sides, recursive vs list approach
+- See conversation history for full analysis of pros/cons
+
 ### 📋 Next Steps
+- **Immediate:** Decide on side dish architecture (if implementing)
 - Step 9: Update agents to use embedded recipes
 - Step 10: Design and document chat interface patterns
 - Step 11: Integrate chat with MealPlan objects

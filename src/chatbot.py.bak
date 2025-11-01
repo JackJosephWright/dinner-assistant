@@ -85,10 +85,10 @@ class MealPlanningChatbot:
                 self.last_meal_plan = recent_plans[0]
                 self.current_meal_plan_id = recent_plans[0].id
                 if self.verbose:
-                    self._verbose_output(f"📋 Resumed plan for week of {recent_plans[0].week_of}")
+                    print(f"📋 Resumed plan for week of {recent_plans[0].week_of}")
         except Exception as e:
             if self.verbose:
-                self._verbose_output(f"Note: Could not load recent plan: {e}")
+                print(f"Note: Could not load recent plan: {e}")
 
     def _select_recipes_with_llm(self, recipes: List, num_needed: int, recent_meals: List = None, user_requirements: str = None) -> List:
         """
@@ -165,7 +165,7 @@ Example response format (using actual 6-digit IDs from above):
             content = response.content[0].text.strip()
 
             if self.verbose:
-                self._verbose_output(f"      → LLM response: {content[:100]}...")
+                print(f"      → LLM response: {content[:100]}...")
 
             # Remove markdown code blocks if present
             if content.startswith("```"):
@@ -191,19 +191,19 @@ Example response format (using actual 6-digit IDs from above):
             selected_ids_str = [str(id) for id in selected_ids]
 
             if self.verbose:
-                self._verbose_output(f"      → Matching IDs: {selected_ids_str}")
-                self._verbose_output(f"      → Available recipe IDs: {[str(r.id) for r in recipes[:5]]}...")
+                print(f"      → Matching IDs: {selected_ids_str}")
+                print(f"      → Available recipe IDs: {[str(r.id) for r in recipes[:5]]}...")
 
             # Return recipes matching selected IDs
             matched = [r for r in recipes if str(r.id) in selected_ids_str]
 
             if self.verbose:
-                self._verbose_output(f"      → Matched {len(matched)} recipes")
+                print(f"      → Matched {len(matched)} recipes")
 
             # If LLM hallucinated invalid IDs, fill remaining slots with unused recipes
             if len(matched) < num_needed:
                 if self.verbose:
-                    self._verbose_output(f"      → ⚠️  LLM returned invalid IDs, filling {num_needed - len(matched)} remaining slots...")
+                    print(f"      → ⚠️  LLM returned invalid IDs, filling {num_needed - len(matched)} remaining slots...")
 
                 # Get recipes that weren't selected
                 matched_ids = {str(r.id) for r in matched}
@@ -214,14 +214,14 @@ Example response format (using actual 6-digit IDs from above):
                 matched.extend(remaining[:needed])
 
                 if self.verbose:
-                    self._verbose_output(f"      → Added: {[r.name[:30] for r in remaining[:needed]]}")
+                    print(f"      → Added: {[r.name[:30] for r in remaining[:needed]]}")
 
             return matched[:num_needed]
 
         except Exception as e:
             # Fallback: just return first N recipes
             if self.verbose:
-                self._verbose_output(f"LLM selection failed: {e}, using fallback")
+                print(f"LLM selection failed: {e}, using fallback")
             return recipes[:num_needed]
 
     def _llm_semantic_match(self, requirements: str, category: str) -> bool:
@@ -262,7 +262,7 @@ Answer ONLY with: YES or NO"""
 
         except Exception as e:
             if self.verbose:
-                self._verbose_output(f"      → LLM semantic match failed: {e}, assuming no match")
+                print(f"      → LLM semantic match failed: {e}, assuming no match")
             return False
 
     def _select_backup_options(self, backups: List, num_options: int = 3) -> List:
@@ -340,7 +340,7 @@ Example: ["{backups[0].id}", "{backups[1].id}", "{backups[2].id}"]"""
 
         except Exception as e:
             if self.verbose:
-                self._verbose_output(f"      → LLM selection failed: {e}, using first {num_options}")
+                print(f"      → LLM selection failed: {e}, using first {num_options}")
             return backups[:num_options]
 
     def _check_backup_match(self, requirements: str, category: str) -> str:
@@ -386,7 +386,7 @@ Example: ["{backups[0].id}", "{backups[1].id}", "{backups[2].id}"]"""
         # Direct category match → auto-swap
         if category_lower in requirements_lower:
             if self.verbose:
-                self._verbose_output(f"      → Matched '{category}' via direct match → AUTO mode")
+                print(f"      → Matched '{category}' via direct match → AUTO mode")
             return "auto"
 
         # Check for related terms → auto-swap
@@ -401,7 +401,7 @@ Example: ["{backups[0].id}", "{backups[1].id}", "{backups[2].id}"]"""
         for term in related_terms.get(category_lower, []):
             if term in requirements_lower:
                 if self.verbose:
-                    self._verbose_output(f"      → Matched '{category}' via related term '{term}' → AUTO mode")
+                    print(f"      → Matched '{category}' via related term '{term}' → AUTO mode")
                 return "auto"
 
         # Check for vague terms that match any category → need confirmation
@@ -409,14 +409,14 @@ Example: ["{backups[0].id}", "{backups[1].id}", "{backups[2].id}"]"""
         vague_terms = ["something", "anything", "other", "else"]
         if any(term in requirements_lower for term in vague_terms) and not has_specific_food:
             if self.verbose:
-                self._verbose_output(f"      → Matched '{category}' via vague terms → CONFIRM mode")
+                print(f"      → Matched '{category}' via vague terms → CONFIRM mode")
             return "confirm"
 
         # "different" alone is vague, but "different chicken" is specific
         # Only trigger confirm if "different" exists AND no specific food AND category doesn't match
         if "different" in requirements_lower and not has_specific_food and category_lower not in requirements_lower:
             if self.verbose:
-                self._verbose_output(f"      → Matched '{category}' via 'different' (vague) → CONFIRM mode")
+                print(f"      → Matched '{category}' via 'different' (vague) → CONFIRM mode")
             return "confirm"
 
         # Check for modifier words indicating same category → auto-swap
@@ -424,17 +424,17 @@ Example: ["{backups[0].id}", "{backups[1].id}", "{backups[2].id}"]"""
         has_modifier = any(mod in requirements_lower for mod in modifiers)
         if has_modifier and category_lower in requirements_lower:
             if self.verbose:
-                self._verbose_output(f"      → Matched '{category}' via modifier → AUTO mode")
+                print(f"      → Matched '{category}' via modifier → AUTO mode")
             return "auto"
 
         # Tier 2: LLM semantic fallback for edge cases → auto-swap
         if self._llm_semantic_match(requirements, category):
             if self.verbose:
-                self._verbose_output(f"      → Matched '{category}' via LLM semantic analysis → AUTO mode")
+                print(f"      → Matched '{category}' via LLM semantic analysis → AUTO mode")
             return "auto"
 
         if self.verbose:
-            self._verbose_output(f"      → No match for '{category}'")
+            print(f"      → No match for '{category}'")
         return "no_match"
 
     def get_system_prompt(self) -> str:
@@ -588,34 +588,6 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                         },
                     },
                     "required": ["meal_plan_id"],
-                },
-            },
-            {
-                "name": "add_extra_items",
-                "description": "Add extra items to the current shopping list that aren't from recipes (e.g., 'bananas', 'milk', 'bread'). Use when user wants to add personal items to their shopping list.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "items": {
-                            "type": "array",
-                            "description": "List of items to add",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {
-                                        "type": "string",
-                                        "description": "Name of the item (e.g., 'bananas')"
-                                    },
-                                    "quantity": {
-                                        "type": "string",
-                                        "description": "Quantity with unit (e.g., '6', '1 gallon', '2 loaves'). Defaults to '1' if not specified."
-                                    },
-                                },
-                                "required": ["name"]
-                            }
-                        },
-                    },
-                    "required": ["items"],
                 },
             },
             {
@@ -805,20 +777,11 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
             elif tool_name == "plan_meals_smart":
                 # 1. Extract/generate dates
                 num_days = tool_input.get("num_days", 7)
+                today = datetime.now().date()
+                dates = [(today + timedelta(days=i)).isoformat() for i in range(num_days)]
 
-                # Use dates from UI if available (web interface)
-                if hasattr(self, 'selected_dates') and self.selected_dates:
-                    dates = self.selected_dates[:num_days]  # Use UI-selected dates
-                    week_of = self.week_start if hasattr(self, 'week_start') else dates[0]
-                    if self.verbose:
-                        self._verbose_output(f"      → Using {len(dates)} dates from UI: {dates[0]} to {dates[-1]}")
-                else:
-                    # Fallback for CLI/non-web usage - generate dates from today
-                    today = datetime.now().date()
-                    dates = [(today + timedelta(days=i)).isoformat() for i in range(num_days)]
-                    week_of = dates[0]
-                    if self.verbose:
-                        self._verbose_output(f"      → Planning {num_days} days starting {dates[0]}")
+                if self.verbose:
+                    print(f"      → Planning {num_days} days starting {dates[0]}")
 
                 # 2. SQL search for candidates
                 # Default to "dinner" for broad coverage (this is a dinner planning bot)
@@ -830,7 +793,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 )
 
                 if self.verbose:
-                    self._verbose_output(f"      → SQL search found {len(candidates)} candidates for '{search_query}'")
+                    print(f"      → SQL search found {len(candidates)} candidates for '{search_query}'")
 
                 if not candidates:
                     return f"No recipes found matching '{search_query}'. Try different search terms."
@@ -845,9 +808,9 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
                 if self.verbose:
                     if exclude_allergens:
-                        self._verbose_output(f"      → Filtered to {len(filtered)} recipes without {', '.join(exclude_allergens)}")
+                        print(f"      → Filtered to {len(filtered)} recipes without {', '.join(exclude_allergens)}")
                     else:
-                        self._verbose_output(f"      → All {len(filtered)} have structured ingredients")
+                        print(f"      → All {len(filtered)} have structured ingredients")
 
                 if not filtered:
                     return f"Found {len(candidates)} recipes, but none without {', '.join(exclude_allergens)}. Try relaxing constraints."
@@ -869,19 +832,19 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                             break
 
                 if self.verbose:
-                    self._verbose_output(f"      → Using LLM to select {num_days} varied recipes from {len(filtered)} options...")
+                    print(f"      → Using LLM to select {num_days} varied recipes from {len(filtered)} options...")
                     if user_message:
-                        self._verbose_output(f"      → Passing user requirements to selector: '{user_message[:60]}...'")
+                        print(f"      → Passing user requirements to selector: '{user_message[:60]}...'")
 
                 selected = self._select_recipes_with_llm(filtered, num_days, recent_names, user_message)
 
                 if self.verbose:
-                    self._verbose_output(f"      → LLM selected: {', '.join([r.name[:30] for r in selected])}")
+                    print(f"      → LLM selected: {', '.join([r.name[:30] for r in selected])}")
 
                 # 4b. Store unselected recipes as backups for quick swaps
                 backups = [r for r in filtered if r not in selected][:20]  # Top 20 backups
                 if self.verbose and backups:
-                    self._verbose_output(f"      → Stored {len(backups)} backup recipes for quick swaps")
+                    print(f"      → Stored {len(backups)} backup recipes for quick swaps")
 
                 # 5. Create PlannedMeal objects with embedded recipes
                 meals = [
@@ -897,7 +860,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 # 6. Create and save MealPlan
                 backup_dict = {search_query: backups} if backups and search_query else {}
                 plan = MealPlan(
-                    week_of=week_of,  # Use week start from UI or first date
+                    week_of=dates[0],
                     meals=meals,
                     preferences_applied=exclude_allergens,  # Track what allergens were avoided
                     backup_recipes=backup_dict  # Store backups for instant swaps
@@ -909,7 +872,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 self.last_meal_plan = plan
 
                 if self.verbose:
-                    self._verbose_output(f"      → Cached plan in memory ({len(plan.meals)} meals with embedded recipes)")
+                    print(f"      → Cached plan in memory ({len(plan.meals)} meals with embedded recipes)")
 
                 # 7. Return summary
                 total_ingredients = len(plan.get_all_ingredients())
@@ -939,28 +902,6 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     self.current_shopping_list_id = result["grocery_list_id"]
                     scaling_note = f" (with scaling: {scaling_instructions})" if scaling_instructions else ""
                     return f"Created shopping list with {result['num_items']} items, organized by store section{scaling_note}."
-                else:
-                    return f"Error: {result.get('error')}"
-
-            elif tool_name == "add_extra_items":
-                if not self.current_shopping_list_id:
-                    return "Error: No shopping list available. Please create a shopping list first."
-
-                items = tool_input.get("items", [])
-                if not items:
-                    return "Error: No items provided to add."
-
-                # Call the shopping tools to add extra items
-                from mcp_server.tools.shopping_tools import ShoppingTools
-                shopping_tools = ShoppingTools(self.assistant.db)
-                result = shopping_tools.add_extra_items(
-                    grocery_list_id=self.current_shopping_list_id,
-                    items=items
-                )
-
-                if result["success"]:
-                    item_names = ", ".join([item["name"] for item in result["added_items"]])
-                    return f"✓ Added {len(result['added_items'])} item(s) to your shopping list: {item_names}"
                 else:
                     return f"Error: {result.get('error')}"
 
@@ -1026,7 +967,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 if meal_plan:
                     self.last_meal_plan = meal_plan
                     if self.verbose:
-                        self._verbose_output(f"      → Loaded and cached plan ({len(meal_plan.meals)} meals)")
+                        print(f"      → Loaded and cached plan ({len(meal_plan.meals)} meals)")
 
                 # Get explanation from agent
                 explanation = self.assistant.planning_agent.explain_plan(
@@ -1081,13 +1022,13 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                         used_category = category
                         match_mode = mode
                         if self.verbose:
-                            self._verbose_output(f"      → Found {len(candidates)} backup recipes for '{category}' (0 DB queries)")
+                            print(f"      → Found {len(candidates)} backup recipes for '{category}' (0 DB queries)")
                         break
 
                 # Step 2: Fall back to fresh search if no match
                 if not candidates:
                     if self.verbose:
-                        self._verbose_output(f"      → No matching backups, falling back to fresh search...")
+                        print(f"      → No matching backups, falling back to fresh search...")
                     # Use existing swap_meal tool
                     return self.execute_tool("swap_meal", tool_input)
 
@@ -1097,7 +1038,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     options = self._select_backup_options(candidates, num_options=3)
 
                     if self.verbose:
-                        self._verbose_output(f"      → Vague request detected, showing {len(options)} options to user")
+                        print(f"      → Vague request detected, showing {len(options)} options to user")
 
                     # Return formatted options for LLM to present
                     output = "I have these options from your original search:\n\n"
@@ -1152,7 +1093,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 # Step 6: Update cached plan
                 target_meal.recipe = new_recipe
                 if self.verbose:
-                    self._verbose_output(f"      → Updated cached plan (instant swap, total <10ms)")
+                    print(f"      → Updated cached plan (instant swap, total <10ms)")
 
                 # Step 7: Return success message
                 output = f"✓ Swapped meal on {date} (using cached backups)\n"
@@ -1192,7 +1133,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 if not selected_recipe:
                     selected_recipe = options[0]
                     if self.verbose:
-                        self._verbose_output(f"      → Could not parse selection '{selection}', using first option")
+                        print(f"      → Could not parse selection '{selection}', using first option")
 
                 # Perform the swap
                 date = self.pending_swap_options["date"]
@@ -1223,7 +1164,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 # Update cached plan
                 target_meal.recipe = selected_recipe
                 if self.verbose:
-                    self._verbose_output(f"      → Swapped to user's selected option (instant, <10ms)")
+                    print(f"      → Swapped to user's selected option (instant, <10ms)")
 
                 # Clear pending options
                 self.pending_swap_options = None
@@ -1244,7 +1185,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 all_allergens = self.last_meal_plan.get_all_allergens()
 
                 if self.verbose:
-                    self._verbose_output(f"      → Checking cached plan for '{allergen}' (0 DB queries)")
+                    print(f"      → Checking cached plan for '{allergen}' (0 DB queries)")
 
                 if allergen in all_allergens:
                     meals = self.last_meal_plan.get_meals_with_allergen(allergen)
@@ -1261,7 +1202,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 meals = self.last_meal_plan.get_meals_with_allergen(allergen)
 
                 if self.verbose:
-                    self._verbose_output(f"      → Filtering cached plan for '{allergen}' (0 DB queries)")
+                    print(f"      → Filtering cached plan for '{allergen}' (0 DB queries)")
 
                 if not meals:
                     return f"No meals contain {allergen}."
@@ -1289,7 +1230,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 meals = self.last_meal_plan.get_meals_for_day(date)
 
                 if self.verbose:
-                    self._verbose_output(f"      → Getting ingredients for {date} from cached plan (0 DB queries)")
+                    print(f"      → Getting ingredients for {date} from cached plan (0 DB queries)")
 
                 if not meals:
                     return f"No meals found for {date}. Check your plan dates."
@@ -1354,8 +1295,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
             for content_block in response.content:
                 if content_block.type == "tool_use":
                     if self.verbose:
-                        self._verbose_output(f"\n🔧 [TOOL] {content_block.name}")
-                        self._verbose_output(f"   Input: {json.dumps(content_block.input, indent=2)}")
+                        print(f"\n🔧 [TOOL] {content_block.name}")
+                        print(f"   Input: {json.dumps(content_block.input, indent=2)}")
 
                     tool_result = self.execute_tool(
                         content_block.name,
@@ -1365,7 +1306,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     if self.verbose:
                         # Truncate long results for readability
                         result_preview = tool_result if len(tool_result) < 200 else tool_result[:200] + "..."
-                        self._verbose_output(f"   Result: {result_preview}\n")
+                        print(f"   Result: {result_preview}\n")
 
                     tool_results.append({
                         "type": "tool_result",
@@ -1407,54 +1348,54 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
         if not self.verbose:
             return
 
-        self._verbose_output("\n" + "="*70)
-        self._verbose_output("📋 CURRENT MEAL PLAN STATE")
-        self._verbose_output("="*70)
+        print("\n" + "="*70)
+        print("📋 CURRENT MEAL PLAN STATE")
+        print("="*70)
 
         if self.last_meal_plan is None or not self.last_meal_plan.meals:
-            self._verbose_output("No active meal plan")
+            print("No active meal plan")
         else:
-            self._verbose_output(f"Week of: {self.last_meal_plan.week_of}")
-            self._verbose_output(f"Number of meals: {len(self.last_meal_plan.meals)}")
-            self._verbose_output(f"\nMeals:")
+            print(f"Week of: {self.last_meal_plan.week_of}")
+            print(f"Number of meals: {len(self.last_meal_plan.meals)}")
+            print(f"\nMeals:")
             for meal in self.last_meal_plan.meals:
                 day_name = meal.date.strftime("%a %m/%d") if isinstance(meal.date, datetime) else meal.date
-                self._verbose_output(f"  • {day_name}: {meal.recipe.name}")
-                self._verbose_output(f"    ({len(meal.recipe.ingredients)} ingredients)")
+                print(f"  • {day_name}: {meal.recipe.name}")
+                print(f"    ({len(meal.recipe.ingredients)} ingredients)")
 
             # Show backup recipes available
             if self.last_meal_plan.backup_recipes:
                 total_backups = sum(len(recipes) for recipes in self.last_meal_plan.backup_recipes.values())
-                self._verbose_output(f"\n🔄 Backup recipes: {total_backups} cached")
+                print(f"\n🔄 Backup recipes: {total_backups} cached")
                 for category, recipes in self.last_meal_plan.backup_recipes.items():
-                    self._verbose_output(f"   • {category}: {len(recipes)} recipes")
+                    print(f"   • {category}: {len(recipes)} recipes")
 
-        self._verbose_output("="*70 + "\n")
+        print("="*70 + "\n")
 
     def run(self):
         """Run interactive chat loop."""
-        self._verbose_output("\n" + "="*70)
-        self._verbose_output("🍽️  MEAL PLANNING ASSISTANT - AI Chatbot")
-        self._verbose_output("="*70)
-        self._verbose_output("\nPowered by Claude Sonnet 4.5 with intelligent tools")
-        self._verbose_output("Database: 5,000 enriched recipes (100% structured ingredients)")
+        print("\n" + "="*70)
+        print("🍽️  MEAL PLANNING ASSISTANT - AI Chatbot")
+        print("="*70)
+        print("\nPowered by Claude Sonnet 4.5 with intelligent tools")
+        print("Database: 5,000 enriched recipes (100% structured ingredients)")
 
         if self.verbose:
-            self._verbose_output("Mode: VERBOSE (showing tool execution details)")
+            print("Mode: VERBOSE (showing tool execution details)")
 
-        self._verbose_output("\n✨ What I can do:")
-        self._verbose_output("  • Plan meals with smart recipe selection")
-        self._verbose_output("  • Filter by allergens (dairy, gluten, nuts, etc.)")
-        self._verbose_output("  • Find recipes by keywords or cooking time")
-        self._verbose_output("  • Create shopping lists organized by category")
-        self._verbose_output("  • Swap meals in your plan")
+        print("\n✨ What I can do:")
+        print("  • Plan meals with smart recipe selection")
+        print("  • Filter by allergens (dairy, gluten, nuts, etc.)")
+        print("  • Find recipes by keywords or cooking time")
+        print("  • Create shopping lists organized by category")
+        print("  • Swap meals in your plan")
 
-        self._verbose_output("\n💡 Try asking:")
-        self._verbose_output('  "Plan 4 days of chicken meals"')
-        self._verbose_output('  "Plan a week, no dairy or gluten"')
-        self._verbose_output('  "Show me quick pasta recipes under 30 minutes"')
+        print("\n💡 Try asking:")
+        print('  "Plan 4 days of chicken meals"')
+        print('  "Plan a week, no dairy or gluten"')
+        print('  "Show me quick pasta recipes under 30 minutes"')
 
-        self._verbose_output("\nType 'quit' to exit.\n")
+        print("\nType 'quit' to exit.\n")
 
         while True:
             try:
@@ -1464,22 +1405,22 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     continue
 
                 if user_input.lower() in ["quit", "exit", "bye"]:
-                    self._verbose_output("\n🍽️  Assistant: Goodbye! Happy cooking!")
+                    print("\n🍽️  Assistant: Goodbye! Happy cooking!")
                     break
 
                 # Get response
-                self._verbose_output("\n🍽️  Assistant: ", end="", flush=True)
+                print("\n🍽️  Assistant: ", end="", flush=True)
                 response = self.chat(user_input)
-                self._verbose_output(response + "\n")
+                print(response + "\n")
 
                 # Display current meal plan state in verbose mode
                 self._display_current_plan_verbose()
 
             except KeyboardInterrupt:
-                self._verbose_output("\n\n🍽️  Assistant: Goodbye!")
+                print("\n\n🍽️  Assistant: Goodbye!")
                 break
             except Exception as e:
-                self._verbose_output(f"\n❌ Error: {e}\n")
+                print(f"\n❌ Error: {e}\n")
 
 
 def main():

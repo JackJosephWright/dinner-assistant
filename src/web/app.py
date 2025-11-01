@@ -253,8 +253,14 @@ def plan_page():
                         meal_dict['estimated_time'] = meal.recipe.estimated_time
                         meal_dict['cuisine'] = meal.recipe.cuisine
                         meal_dict['difficulty'] = meal.recipe.difficulty
-                    # Rename 'date' to 'meal_date' for clarity
-                    meal_dict['meal_date'] = meal_dict.pop('date', None)
+                    # Format date nicely (e.g., "Friday, November 1")
+                    date_str = meal_dict.pop('date', None)
+                    if date_str:
+                        from datetime import datetime
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                        meal_dict['meal_date'] = date_obj.strftime('%A, %B %d')
+                    else:
+                        meal_dict['meal_date'] = date_str
                     enriched_meals.append(meal_dict)
 
                 current_plan = {
@@ -559,15 +565,27 @@ def api_chat():
         data = request.json
         message = data.get('message')
         session_id = data.get('session_id', 'default')
+        selected_dates = data.get('selected_dates')  # Get selected dates from UI
+        week_start = data.get('week_start')          # Get week start from UI
 
         if not message:
             return jsonify({"success": False, "error": "No message provided"}), 400
 
         logger.info(f"Chat message: {message}")
+        if selected_dates:
+            logger.info(f"Selected dates from UI: {selected_dates}")
+        if week_start:
+            logger.info(f"Week start from UI: {week_start}")
 
         # Store old IDs to detect changes
         old_meal_plan_id = session.get('meal_plan_id')
         old_shopping_list_id = session.get('shopping_list_id')
+
+        # Pass selected dates to chatbot for meal planning
+        if selected_dates:
+            chatbot_instance.selected_dates = selected_dates
+        if week_start:
+            chatbot_instance.week_start = week_start
 
         # Restore pending swap options from session
         if 'pending_swap_options' in session:

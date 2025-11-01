@@ -152,12 +152,17 @@ class AgenticPlanningAgent:
             for i, meal_data in enumerate(final_state["selected_meals"]):
                 meal_date = (week_start + timedelta(days=i)).strftime("%Y-%m-%d")
 
+                # Load full Recipe object from database
+                recipe = self.db.get_recipe(meal_data["recipe_id"])
+                if not recipe:
+                    logger.error(f"Recipe {meal_data['recipe_id']} not found in database")
+                    continue
+
                 meals.append(
                     PlannedMeal(
                         date=meal_date,
                         meal_type="dinner",
-                        recipe_id=meal_data["recipe_id"],
-                        recipe_name=meal_data["recipe_name"],
+                        recipe=recipe,
                         servings=meal_data.get("servings", 4),
                     )
                 )
@@ -180,8 +185,8 @@ class AgenticPlanningAgent:
                 "meals": [
                     {
                         "date": m.date,
-                        "recipe_name": m.recipe_name,
-                        "recipe_id": m.recipe_id,
+                        "recipe_name": m.recipe.name,
+                        "recipe_id": m.recipe.id,
                         "servings": m.servings,
                     }
                     for m in meals
@@ -219,8 +224,8 @@ class AgenticPlanningAgent:
                 return state
 
             # Format history for LLM
-            history_text = "\n".join([f"- {m.recipe_name}" for m in history[:30]])
-            recent_text = "\n".join([f"- {m.recipe_name}" for m in recent_history])
+            history_text = "\n".join([f"- {m.recipe.name}" for m in history[:30]])
+            recent_text = "\n".join([f"- {m.recipe.name}" for m in recent_history])
 
             # Ask LLM to analyze patterns
             prompt = f"""You are a meal planning assistant analyzing a user's meal history.
@@ -248,7 +253,7 @@ Be concise but insightful. Focus on actionable patterns for meal planning."""
 
             # Store results
             state["history_summary"] = analysis
-            state["recent_meals"] = [m.recipe_name for m in recent_history]
+            state["recent_meals"] = [m.recipe.name for m in recent_history]
             state["favorite_patterns"] = analysis
 
             logger.info("LLM analyzed meal history")
@@ -598,7 +603,7 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             # Ask LLM to determine search queries for the replacement
             prompt = f"""You are a meal planning assistant. The user wants to swap a meal in their plan.
 
-Current meal: {meal_to_swap.recipe_name} on {day_name}, {date}
+Current meal: {meal_to_swap.recipe.name} on {day_name}, {date}
 Day type: {'Weekend' if is_weekend else 'Weeknight'}
 Max cooking time: {max_time} minutes
 
@@ -624,7 +629,7 @@ shellfish"""
 
             # Execute searches
             candidates = []
-            recent_meal_names = {m.recipe_name.lower() for m in meal_plan.meals if m.date != date}
+            recent_meal_names = {m.recipe.name.lower() for m in meal_plan.meals if m.date != date}
 
             for line in search_queries_text.split("\n"):
                 keyword = line.strip()
@@ -674,7 +679,7 @@ shellfish"""
 
             selection_prompt = f"""You are a meal planning assistant. Please select the BEST replacement for:
 
-Original meal: {meal_to_swap.recipe_name}
+Original meal: {meal_to_swap.recipe.name}
 Day: {day_name} ({'Weekend' if is_weekend else 'Weeknight'})
 User wants: {requirements}
 
@@ -729,7 +734,7 @@ Example: 5 | Perfect shellfish dish with quick weeknight prep time"""
                 "success": True,
                 "meal_plan_id": meal_plan_id,
                 "date": date,
-                "old_recipe": meal_to_swap.recipe_name,
+                "old_recipe": meal_to_swap.recipe.name,
                 "new_recipe": selected["recipe_name"],
                 "new_recipe_id": selected["recipe_id"],
                 "reason": reason,
@@ -757,11 +762,11 @@ Example: 5 | Perfect shellfish dish with quick weeknight prep time"""
         # Format meal plan for LLM
         meals_text = ""
         for meal in plan.meals:
-            recipe = self.db.get_recipe(meal.recipe_id)
+            recipe = meal.recipe
             if recipe:
                 date_obj = datetime.fromisoformat(meal.date)
                 day_name = date_obj.strftime("%A")
-                meals_text += f"{day_name}, {meal.date}: {meal.recipe_name}\n"
+                meals_text += f"{day_name}, {meal.date}: {recipe.name}\n"
                 meals_text += f"  ({recipe.estimated_time or '?'} min, {recipe.difficulty}, {recipe.cuisine or 'unknown cuisine'})\n\n"
 
         # Ask LLM to explain the plan

@@ -470,6 +470,11 @@ class MealPlan:
     preferences_applied: List[str] = field(default_factory=list)
     id: Optional[str] = None  # Generated on save
 
+    # Backup recipes for instant meal swaps
+    # Key = search category (e.g., "chicken", "pasta")
+    # Value = List of recipes that matched but weren't selected
+    backup_recipes: Dict[str, List['Recipe']] = field(default_factory=dict)
+
     def get_meals_for_day(self, date: str) -> List[PlannedMeal]:
         """
         Get all meals for a specific date.
@@ -665,6 +670,7 @@ class GroceryList:
     items: List[GroceryItem]
     estimated_total: Optional[float] = None
     store_sections: Dict[str, List[GroceryItem]] = field(default_factory=dict)
+    extra_items: List[GroceryItem] = field(default_factory=list)  # User-added items (not from recipes)
     created_at: datetime = field(default_factory=datetime.now)
     id: Optional[str] = None
 
@@ -691,6 +697,7 @@ class GroceryList:
                 section: [item.to_dict() for item in items]
                 for section, items in self.store_sections.items()
             },
+            "extra_items": [item.to_dict() for item in self.extra_items],
             "created_at": self.created_at.isoformat(),
         }
 
@@ -702,6 +709,7 @@ class GroceryList:
             section: [GroceryItem.from_dict(i) for i in items_data]
             for section, items_data in data.get("store_sections", {}).items()
         }
+        extra_items = [GroceryItem.from_dict(i) for i in data.get("extra_items", [])]
 
         return cls(
             id=data.get("id"),
@@ -709,6 +717,7 @@ class GroceryList:
             items=items,
             estimated_total=data.get("estimated_total"),
             store_sections=store_sections,
+            extra_items=extra_items,
             created_at=datetime.fromisoformat(data["created_at"]),
         )
 

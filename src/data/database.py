@@ -436,8 +436,7 @@ class DatabaseInterface:
                 meal_plan.meals[i] = PlannedMeal(
                     date=date,
                     meal_type=meal.meal_type,
-                    recipe_id=new_recipe_id,
-                    recipe_name=new_recipe.name,
+                    recipe=new_recipe,
                     servings=meal.servings,
                     notes=meal.notes,
                 )
@@ -480,12 +479,25 @@ class DatabaseInterface:
 
             meals = []
             for row in rows:
+                # Create a minimal Recipe object for history
+                # (history doesn't have full recipe details)
+                recipe = Recipe(
+                    id="",  # No ID for historical meals
+                    name=row["meal_name"],
+                    description="",
+                    ingredients=[],
+                    ingredients_raw=[],
+                    ingredients_structured=[],
+                    steps=[],
+                    servings=4,
+                    tags=[],
+                )
+
                 meals.append(
                     PlannedMeal(
                         date=row["date"],
                         meal_type=row["meal_type"],
-                        recipe_id="",  # History doesn't have IDs
-                        recipe_name=row["meal_name"],
+                        recipe=recipe,
                         servings=4,  # Default
                         notes=None,
                     )
