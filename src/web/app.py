@@ -90,8 +90,9 @@ API_KEY_AVAILABLE = bool(os.environ.get("ANTHROPIC_API_KEY"))
 chatbot_instance = None
 if API_KEY_AVAILABLE:
     try:
-        chatbot_instance = MealPlanningChatbot()
-        logger.info("Chatbot initialized for chat interface")
+        # Initialize with verbose=True for tool execution details in web UI
+        chatbot_instance = MealPlanningChatbot(verbose=True)
+        logger.info("Chatbot initialized for chat interface (verbose mode enabled)")
     except Exception as e:
         logger.warning(f"Could not initialize chatbot: {e}")
 
@@ -564,7 +565,18 @@ def api_chat():
         old_meal_plan_id = session.get('meal_plan_id')
         old_shopping_list_id = session.get('shopping_list_id')
 
-        # Set up progress callback for this session
+        # Restore pending swap options from session
+        if 'pending_swap_options' in session:
+            chatbot_instance.pending_swap_options = session['pending_swap_options']
+            logger.info("Restored pending_swap_options from session")
+
+        # Set up verbose callback to emit to progress stream
+        def verbose_callback(msg):
+            emit_progress(session_id, msg, "verbose")
+
+        chatbot_instance.verbose_callback = verbose_callback
+
+        # Set up progress callback for this session (for agents)
         set_agent_progress_callback(session_id)
 
         # Emit initial progress
@@ -572,6 +584,11 @@ def api_chat():
 
         # Get AI response
         response = chatbot_instance.chat(message)
+
+        # Save pending swap options to session
+        session['pending_swap_options'] = chatbot_instance.pending_swap_options
+        if chatbot_instance.pending_swap_options:
+            logger.info("Saved pending_swap_options to session")
 
         # Update session with any IDs from chatbot
         plan_changed = False
@@ -615,6 +632,7 @@ def api_chat():
             "shopping_list_id": chatbot_instance.current_shopping_list_id,
             "plan_changed": plan_changed,
             "shopping_changed": shopping_changed,
+            "awaiting_confirmation": bool(chatbot_instance.pending_swap_options),
         })
 
     except Exception as e:
