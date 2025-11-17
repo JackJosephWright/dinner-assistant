@@ -19,7 +19,7 @@ tests/performance/
 ├── instrumentation.py             # Monitoring infrastructure
 └── test_web_performance.py        # Main test suite
 
-run_performance_tests.sh           # Convenient test runner
+scripts/test/run_performance_tests.sh           # Convenient test runner
 pytest.ini                         # Updated with performance markers
 requirements.txt                   # Updated with test deps
 ```
@@ -34,7 +34,7 @@ python3 src/web/app.py
 #### 2. Run Performance Tests
 ```bash
 # Easy way
-./run_performance_tests.sh
+./scripts/test/run_performance_tests.sh
 
 # Or with pytest directly
 pytest tests/performance/ -v -s -m performance
@@ -120,10 +120,10 @@ The tests automatically identify:
 
 ```bash
 # Before optimization
-./run_performance_tests.sh > baseline.txt
+./scripts/test/run_performance_tests.sh > baseline.txt
 
 # After optimization
-./run_performance_tests.sh > optimized.txt
+./scripts/test/run_performance_tests.sh > optimized.txt
 
 # Compare
 diff baseline.txt optimized.txt

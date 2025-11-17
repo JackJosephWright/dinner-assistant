@@ -15,7 +15,7 @@ import json
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from data.database import DatabaseInterface
+from src.data.database import DatabaseInterface
 
 # Get the project root directory
 PROJECT_ROOT = Path(__file__).parent.parent

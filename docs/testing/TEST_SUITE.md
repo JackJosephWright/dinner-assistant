@@ -13,7 +13,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ "swap Monday" → finds Monday's meal in the plan
 - ✅ "swap the chicken" → identifies chicken meal by name
 
-**Run:** `./test_day_interpretation.sh`
+**Run:** `./scripts/test/test_day_interpretation.sh`
 
 **What to check:** Verify `date` values match expected meal dates, not calendar dates
 
@@ -27,7 +27,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ User can pick option by number (1, 2, 3)
 - ✅ Swap completes from backup queue (<10ms)
 
-**Run:** `./test_interactive_swap.sh`
+**Run:** `./scripts/test/test_interactive_swap.sh`
 
 **What to check:** Bot shows 3 options, user picks one, swap happens instantly
 
@@ -41,7 +41,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ Uses single `plan_meals_smart` call (not plan + 5 swaps)
 - ✅ LLM selector receives user requirements
 
-**Run:** `./test_multi_requirement.sh`
+**Run:** `./scripts/test/test_multi_requirement.sh`
 
 **What to check:** Exactly 5 meals created in 2-3 LLM calls (not 9+)
 
@@ -55,7 +55,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ Edge cases fall back to LLM semantic matching
 - ✅ Specific requests ("different chicken") auto-swap without confirmation
 
-**Run:** `./test_hybrid_matching.sh`
+**Run:** `./scripts/test/test_hybrid_matching.sh`
 
 **What to check:** Verbose output shows which tier matched (algorithmic vs LLM)
 
@@ -68,7 +68,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ Swap uses cached backups (0 DB queries)
 - ✅ Performance <10ms consistently
 
-**Run:** `./test_swap_fast.sh`
+**Run:** `./scripts/test/test_swap_fast.sh`
 
 **What to check:** "Performance: <10ms" in output
 
@@ -83,7 +83,7 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 - ✅ Specific auto-swap
 - ✅ Meal plan display
 
-**Run:** `./demo.sh`
+**Run:** `./scripts/demo/demo.sh`
 
 **What to check:** All features work together smoothly
 
@@ -95,13 +95,13 @@ Automated tests to prevent regressions as we iterate on prompts and features.
 cd ~/dinner-assistant
 
 # Quick validation (run all tests)
-./test_day_interpretation.sh
-./test_interactive_swap.sh
-./test_multi_requirement.sh
-./test_hybrid_matching.sh
+./scripts/test/test_day_interpretation.sh
+./scripts/test/test_interactive_swap.sh
+./scripts/test/test_multi_requirement.sh
+./scripts/test/test_hybrid_matching.sh
 
 # Full demo
-./demo.sh
+./scripts/demo/demo.sh
 ```
 
 ---
@@ -111,10 +111,10 @@ cd ~/dinner-assistant
 ### Before Committing Changes
 Run all tests to ensure no regressions:
 ```bash
-./test_day_interpretation.sh && \
-./test_interactive_swap.sh && \
-./test_multi_requirement.sh && \
-./test_hybrid_matching.sh
+./scripts/test/test_day_interpretation.sh && \
+./scripts/test/test_interactive_swap.sh && \
+./scripts/test/test_multi_requirement.sh && \
+./scripts/test/test_hybrid_matching.sh
 ```
 
 ### After Prompt Updates

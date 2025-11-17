@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data.database import DatabaseInterface
-from agents.enhanced_planning_agent import EnhancedPlanningAgent
+from src.agents.enhanced_planning_agent import EnhancedPlanningAgent
 
 
 def test_meal_plan_generation():

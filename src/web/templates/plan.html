@@ -298,6 +298,14 @@
 
             <!-- Chat Input -->
             <div class="chat-input-area">
+                <!-- Verbose toggle -->
+                <div class="mb-3 flex items-center gap-2">
+                    <input type="checkbox" id="verboseToggle" class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                    <label for="verboseToggle" class="text-sm text-gray-700 cursor-pointer select-none">
+                        Show AI reasoning
+                        <span class="text-xs text-gray-500">(see how the AI thinks)</span>
+                    </label>
+                </div>
                 <form id="chatForm">
                     <div class="flex gap-2">
                         <input type="text" id="messageInput" 
@@ -323,6 +331,9 @@
                         </h2>
                         <div class="flex items-center gap-3">
                             <span class="text-sm text-gray-600">Week of {{ current_plan.week_of }}</span>
+                            <button onclick="clearPlan()" id="clearPlanButton" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors flex items-center gap-2">
+                                <i class="fas fa-trash-alt"></i> Clear Plan
+                            </button>
                             <button onclick="replanMeals()" id="replanButton" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors flex items-center gap-2">
                                 <i class="fas fa-sync-alt"></i> Replan
                             </button>
@@ -853,6 +864,39 @@ function startProgressStream() {
     };
 }
 
+// State change streaming for cross-tab synchronization
+let stateEventSource = null;
+let tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+function startStateStream() {
+    // Close existing stream if any
+    if (stateEventSource) {
+        stateEventSource.close();
+    }
+
+    // Create new SSE connection for state changes
+    stateEventSource = new EventSource(`/api/state-stream?tab_id=${tabId}`);
+
+    stateEventSource.onmessage = (event) => {
+        const update = JSON.parse(event.data);
+
+        if (update.type === 'meal_plan_changed') {
+            console.log('Meal plan changed, refreshing display...');
+            updateMealPlanDisplay();
+        } else if (update.type === 'shopping_list_changed') {
+            console.log('Shopping list changed');
+            // Plan tab doesn't need to do anything for shopping list changes
+        }
+        // Ignore keepalive messages
+    };
+
+    stateEventSource.onerror = (error) => {
+        console.error('State stream error:', error);
+        stateEventSource.close();
+        stateEventSource = null;
+    };
+}
+
 function updateTypingMessage(message) {
     const typingMessage = document.getElementById('typingMessage');
     if (typingMessage) {
@@ -892,6 +936,9 @@ document.getElementById('chatForm').addEventListener('submit', async (e) => {
         const selectedDates = getSelectedDaysDates();
         const weekStart = formatDateForInput(new Date(currentStartDate));
 
+        // Get verbose toggle state
+        const verbose = document.getElementById('verboseToggle').checked;
+
         // Send to API with session ID and structured date data
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -900,7 +947,8 @@ document.getElementById('chatForm').addEventListener('submit', async (e) => {
                 message: message,
                 session_id: sessionId,
                 selected_dates: selectedDates,  // Pass dates as structured data
-                week_start: weekStart            // Pass week start date
+                week_start: weekStart,           // Pass week start date
+                verbose: verbose                 // Pass verbose mode preference
             }),
         });
 
@@ -1243,10 +1291,64 @@ async function replanMeals() {
     }
 }
 
+// Clear plan function
+async function clearPlan() {
+    // Confirm before clearing
+    if (!confirm('Are you sure you want to clear the current plan? This will remove all meals and the shopping list.')) {
+        return;
+    }
+
+    const button = document.getElementById('clearPlanButton');
+    const icon = button.querySelector('i');
+    const originalText = button.innerHTML;
+
+    // Disable button and show spinner
+    button.disabled = true;
+    icon.classList.remove('fa-trash-alt');
+    icon.classList.add('fa-spinner', 'spinner');
+
+    try {
+        // Call clear API
+        const response = await fetch('/api/plan/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Clear the display - reload page to show empty state
+            window.location.reload();
+        } else {
+            alert('Error clearing plan: ' + result.error);
+            // Re-enable button
+            button.disabled = false;
+            button.innerHTML = originalText;
+        }
+    } catch (error) {
+        alert('Error clearing plan: ' + error.message);
+        // Re-enable button
+        button.disabled = false;
+        button.innerHTML = originalText;
+    }
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeWeekSelector();
     document.getElementById('messageInput').focus();
+
+    // Start state stream for cross-tab synchronization
+    startStateStream();
+
+    // Initialize verbose toggle from localStorage
+    const verboseToggle = document.getElementById('verboseToggle');
+    if (verboseToggle) {
+        verboseToggle.checked = localStorage.getItem('verboseMode') === 'true';
+        verboseToggle.addEventListener('change', (e) => {
+            localStorage.setItem('verboseMode', e.target.checked);
+        });
+    }
 });
 </script>
 {% endblock %}

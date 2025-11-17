@@ -431,8 +431,10 @@ class DatabaseInterface:
             return None
 
         # Find and swap the meal
+        old_recipe = None
         for i, meal in enumerate(meal_plan.meals):
             if meal.date == date:
+                old_recipe = meal.recipe  # Store old recipe for shopping list update
                 meal_plan.meals[i] = PlannedMeal(
                     date=date,
                     meal_type=meal.meal_type,
@@ -448,6 +450,21 @@ class DatabaseInterface:
         # Save updated plan
         self.save_meal_plan(meal_plan)
         logger.info(f"Swapped meal on {date} in plan {plan_id} to {new_recipe.name}")
+
+        # Update grocery list incrementally (if one exists)
+        grocery_list = self.get_grocery_list_by_week(meal_plan.week_of)
+        if grocery_list and old_recipe:
+            # Remove old recipe ingredients
+            grocery_list.remove_recipe_ingredients(old_recipe.name)
+            logger.info(f"Removed ingredients for '{old_recipe.name}' from shopping list")
+
+            # Add new recipe ingredients
+            grocery_list.add_recipe_ingredients(new_recipe)
+            logger.info(f"Added ingredients for '{new_recipe.name}' to shopping list")
+
+            # Save updated grocery list
+            self.save_grocery_list(grocery_list)
+            logger.info(f"Updated grocery list {grocery_list.id} incrementally")
 
         return meal_plan
 
@@ -565,6 +582,37 @@ class DatabaseInterface:
             cursor = conn.cursor()
 
             cursor.execute("SELECT * FROM grocery_lists WHERE id = ?", (list_id,))
+            row = cursor.fetchone()
+
+            if row:
+                items = [GroceryItem.from_dict(i) for i in json.loads(row["items_json"])]
+                return GroceryList(
+                    id=row["id"],
+                    week_of=row["week_of"],
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                    estimated_total=row["estimated_total"],
+                    items=items,
+                )
+            return None
+
+    def get_grocery_list_by_week(self, week_of: str) -> Optional[GroceryList]:
+        """
+        Get a grocery list by week_of date.
+
+        Args:
+            week_of: Week start date (YYYY-MM-DD)
+
+        Returns:
+            GroceryList object or None if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT * FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
+                (week_of,)
+            )
             row = cursor.fetchone()
 
             if row:

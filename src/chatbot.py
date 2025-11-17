@@ -57,19 +57,39 @@ class MealPlanningChatbot:
 
         # Verbose mode for debugging
         self.verbose = verbose
-        self.verbose_callback = verbose_callback
+        self._verbose_callback = verbose_callback
+        # Wire verbose callback to planning agent
+        self._sync_verbose_callback()
 
         # Auto-load most recent plan
         self._load_most_recent_plan()
 
-    def _verbose_output(self, message: str):
+    @property
+    def verbose_callback(self):
+        """Get the verbose callback."""
+        return self._verbose_callback
+
+    @verbose_callback.setter
+    def verbose_callback(self, callback):
+        """Set verbose callback and sync to planning agent."""
+        self._verbose_callback = callback
+        self._sync_verbose_callback()
+
+    def _sync_verbose_callback(self):
+        """Sync verbose callback to the assistant's planning agent."""
+        if hasattr(self.assistant, 'planning_agent'):
+            self.assistant.planning_agent.verbose_callback = self._verbose_callback
+
+    def _verbose_output(self, message: str, end: str = "\n", flush: bool = False):
         """
         Output verbose message to both console and callback if available.
 
         Args:
             message: Verbose message to output
+            end: String appended after the message (default: newline)
+            flush: Whether to forcibly flush the stream (default: False)
         """
-        print(message)
+        print(message, end=end, flush=flush)
         if self.verbose_callback:
             try:
                 self.verbose_callback(message)

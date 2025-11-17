@@ -247,11 +247,14 @@ document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
     scrollToBottom();
 
     try {
-        // Send to API
+        // Send to API with shop context
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message }),
+            body: JSON.stringify({
+                message: message,
+                context: 'shop'  // Tell chatbot we're in shopping mode
+            }),
         });
 
         const result = await response.json();
@@ -360,6 +363,100 @@ document.addEventListener('change', (e) => {
         const total = document.querySelectorAll('input[type="checkbox"]').length;
         // Could add checked/total display here
     }
+});
+
+// State change streaming for cross-tab synchronization
+let stateEventSource = null;
+let tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+function startStateStream() {
+    // Close existing stream if any
+    if (stateEventSource) {
+        stateEventSource.close();
+    }
+
+    // Create new SSE connection for state changes
+    stateEventSource = new EventSource(`/api/state-stream?tab_id=${tabId}`);
+
+    stateEventSource.onmessage = (event) => {
+        const update = JSON.parse(event.data);
+
+        if (update.type === 'meal_plan_changed') {
+            console.log('Meal plan changed - shopping list will auto-regenerate...');
+            // Do nothing - shopping list is auto-regenerated on backend
+            // We'll receive shopping_list_changed event next
+        } else if (update.type === 'shopping_list_changed') {
+            console.log('Shopping list changed, reloading...');
+            // Reload page to show updated shopping list
+            window.location.reload();
+        }
+        // Ignore keepalive messages
+    };
+
+    stateEventSource.onerror = (error) => {
+        console.error('State stream error:', error);
+        stateEventSource.close();
+        stateEventSource = null;
+    };
+}
+
+function showStaleNotification() {
+    // Check if notification already exists
+    if (document.getElementById('staleNotification')) return;
+
+    const notification = document.createElement('div');
+    notification.id = 'staleNotification';
+    notification.className = 'fixed top-4 right-4 z-50 bg-yellow-50 border-l-4 border-yellow-400 p-4 shadow-lg rounded-lg max-w-md';
+    notification.innerHTML = `
+        <div class="flex items-start">
+            <i class="fas fa-exclamation-triangle text-yellow-400 mt-1"></i>
+            <div class="ml-3">
+                <p class="text-sm font-semibold text-yellow-800">Shopping List May Be Outdated</p>
+                <p class="text-xs text-yellow-700 mt-1">The meal plan was updated. Regenerate your shopping list to see changes.</p>
+                <button onclick="regenerateShoppingList()" class="mt-2 text-xs bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded">
+                    Regenerate Now
+                </button>
+                <button onclick="document.getElementById('staleNotification').remove()" class="mt-2 ml-2 text-xs text-yellow-800 underline">
+                    Dismiss
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(notification);
+}
+
+async function regenerateShoppingList() {
+    const notification = document.getElementById('staleNotification');
+    if (notification) notification.remove();
+
+    // Trigger shopping list creation
+    addMessage('Creating updated shopping list...', 'assistant');
+
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: 'create shopping list',
+                context: 'shop'
+            }),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            window.location.reload();
+        } else {
+            addMessage('Error: ' + result.error, 'error');
+        }
+    } catch (error) {
+        addMessage('Error: ' + error.message, 'error');
+    }
+}
+
+// Start state stream on page load
+document.addEventListener('DOMContentLoaded', () => {
+    startStateStream();
 });
 </script>
 {% endblock %}

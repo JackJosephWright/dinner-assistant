@@ -790,6 +790,193 @@ class GroceryList:
                 self.store_sections[item.category] = []
             self.store_sections[item.category].append(item)
 
+    def add_recipe_ingredients(self, recipe: 'Recipe'):
+        """
+        Add all ingredients from a recipe to the shopping list.
+
+        Args:
+            recipe: Recipe object with ingredients
+
+        This method:
+        1. Gets ingredients (structured if enriched, raw if not)
+        2. For each ingredient:
+           - Parses into name, quantity, unit, amount
+           - Finds existing item or creates new one
+           - Adds contribution from this recipe
+        3. Re-organizes store sections
+        """
+        # Get ingredients (use structured if available, otherwise raw)
+        if recipe.ingredients_structured:
+            ingredients = recipe.ingredients_structured
+        else:
+            ingredients = recipe.ingredients_raw
+
+        for ingredient in ingredients:
+            # Parse ingredient (handles both Ingredient objects and strings)
+            parsed = self._parse_ingredient(ingredient, recipe)
+
+            # Find existing item or create new
+            existing_item = self._find_item(parsed["name"])
+
+            if existing_item:
+                # Add to existing item
+                existing_item.add_contribution(
+                    recipe.name,
+                    parsed["quantity"],
+                    parsed["unit"],
+                    parsed["amount"]
+                )
+            else:
+                # Create new item
+                new_item = GroceryItem(
+                    name=parsed["name"].title(),
+                    quantity=parsed["quantity"],
+                    category=parsed.get("category", "other"),
+                    recipe_sources=[recipe.name],
+                    contributions=[
+                        IngredientContribution(
+                            recipe.name,
+                            parsed["quantity"],
+                            parsed["unit"],
+                            parsed["amount"]
+                        )
+                    ]
+                )
+                self.items.append(new_item)
+
+        # Re-organize by section
+        self.store_sections = {}
+        self._organize_by_section()
+
+    def remove_recipe_ingredients(self, recipe_name: str):
+        """
+        Remove all contributions from a specific recipe.
+
+        Args:
+            recipe_name: Name of recipe to remove
+
+        This method:
+        1. Iterates through all items
+        2. Removes contributions from this recipe
+        3. Removes items that have no contributions left
+        4. Re-organizes store sections
+        """
+        items_to_remove = []
+
+        for item in self.items:
+            item.remove_contribution(recipe_name)
+
+            # If no contributions left, mark for removal
+            if not item.contributions:
+                items_to_remove.append(item)
+
+        # Remove empty items
+        for item in items_to_remove:
+            self.items.remove(item)
+
+        # Re-organize by section
+        self.store_sections = {}
+        self._organize_by_section()
+
+    def _find_item(self, name: str) -> Optional[GroceryItem]:
+        """
+        Find an existing grocery item by name (case-insensitive).
+
+        Args:
+            name: Item name to search for
+
+        Returns:
+            GroceryItem if found, None otherwise
+        """
+        name_lower = name.lower()
+        for item in self.items:
+            if item.name.lower() == name_lower:
+                return item
+        return None
+
+    def _parse_ingredient(self, ingredient, recipe: 'Recipe') -> Dict[str, any]:
+        """
+        Parse an ingredient into structured components.
+
+        Args:
+            ingredient: Either an Ingredient object (enriched) or string (raw)
+            recipe: Recipe this ingredient belongs to
+
+        Returns:
+            Dict with keys: name, quantity, unit, amount, category
+        """
+        # Check if this is an enriched Ingredient object
+        if hasattr(ingredient, 'name') and hasattr(ingredient, 'quantity'):
+            # Phase 2 enriched ingredient
+            return {
+                "name": ingredient.name,
+                "quantity": f"{ingredient.quantity} {ingredient.unit}".strip(),
+                "unit": ingredient.unit or "count",
+                "amount": ingredient.quantity,
+                "category": ingredient.category or "other",
+            }
+        else:
+            # Raw ingredient string - do simple parsing
+            # For now, use a basic heuristic. Later we can add LLM parsing
+            ingredient_str = str(ingredient)
+
+            # Try to extract quantity (look for numbers at start)
+            import re
+            match = re.match(r'^(\d+\.?\d*)\s*([a-zA-Z]+)?\s+(.+)$', ingredient_str.strip())
+
+            if match:
+                amount = float(match.group(1))
+                unit = match.group(2) or "count"
+                name = match.group(3).strip()
+                quantity = f"{amount} {unit}".strip()
+            else:
+                # No quantity found, treat as single item
+                amount = 1.0
+                unit = "count"
+                name = ingredient_str.strip()
+                quantity = "1"
+
+            # Guess category based on name (simple heuristic)
+            category = self._guess_category(name)
+
+            return {
+                "name": name,
+                "quantity": quantity,
+                "unit": unit,
+                "amount": amount,
+                "category": category,
+            }
+
+    def _guess_category(self, name: str) -> str:
+        """
+        Guess ingredient category from name.
+
+        Args:
+            name: Ingredient name
+
+        Returns:
+            Category string
+        """
+        name_lower = name.lower()
+
+        # Simple keyword matching
+        if any(word in name_lower for word in ["chicken", "beef", "pork", "turkey", "sausage"]):
+            return "meat"
+        elif any(word in name_lower for word in ["fish", "salmon", "tuna", "shrimp", "cod"]):
+            return "seafood"
+        elif any(word in name_lower for word in ["milk", "cheese", "butter", "cream", "yogurt", "egg"]):
+            return "dairy"
+        elif any(word in name_lower for word in ["lettuce", "tomato", "onion", "garlic", "pepper", "carrot", "cucumber", "avocado"]):
+            return "produce"
+        elif any(word in name_lower for word in ["bread", "tortilla", "bun", "roll"]):
+            return "bakery"
+        elif any(word in name_lower for word in ["frozen"]):
+            return "frozen"
+        elif any(word in name_lower for word in ["flour", "sugar", "salt", "rice", "pasta", "oil", "sauce", "broth", "stock"]):
+            return "pantry"
+        else:
+            return "other"
+
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
         return {

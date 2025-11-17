@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from main import MealPlanningAssistant
+from src.main import MealPlanningAssistant
 
 
 def test_complete_workflow():

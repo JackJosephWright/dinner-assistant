@@ -68,6 +68,10 @@ data/*.db-shm
 *.temp
 .cache/
 
+# Logs
+logs/
+*.log
+
 # OS Files
 Thumbs.db
 .DS_Store

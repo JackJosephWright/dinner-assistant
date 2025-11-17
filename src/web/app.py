@@ -9,9 +9,12 @@ and accessing cooking guides.
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 import queue
 import threading
 import sqlite3
+import uuid
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify, session, Response
@@ -30,6 +33,24 @@ from main import MealPlanningAssistant
 from chatbot import MealPlanningChatbot
 from onboarding import OnboardingFlow, check_onboarding_status
 
+# Setup logging with both console and file output
+logs_dir = os.path.join(project_root, 'logs')
+os.makedirs(logs_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.DEBUG,  # Changed to DEBUG for more verbose output
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),  # Console output
+        RotatingFileHandler(
+            os.path.join(logs_dir, 'app.log'),
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Import performance monitoring (optional, only if available)
 try:
     sys.path.insert(0, os.path.join(project_root, 'tests'))
@@ -38,13 +59,6 @@ try:
 except ImportError:
     PERFORMANCE_MONITORING_ENABLED = False
     logger.warning("Performance monitoring not available - instrumentation.py not found")
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -79,13 +93,20 @@ else:
     perf_monitor = None
 
 # Helper to set progress callback for the current request
-def set_agent_progress_callback(session_id: str):
+def set_agent_progress_callback(session_id: str, enable_verbose: bool = False):
     """Set progress callback for the assistant's agents."""
     def callback(message: str):
         emit_progress(session_id, message)
 
+    def verbose_callback(message: str):
+        emit_progress(session_id, message, "verbose")
+
     if assistant.is_agentic and hasattr(assistant.planning_agent, 'progress_callback'):
         assistant.planning_agent.progress_callback = callback
+        if enable_verbose:
+            assistant.planning_agent.verbose_callback = verbose_callback
+        else:
+            assistant.planning_agent.verbose_callback = None
 
 # Check if API key is available
 API_KEY_AVAILABLE = bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -94,15 +115,19 @@ API_KEY_AVAILABLE = bool(os.environ.get("ANTHROPIC_API_KEY"))
 chatbot_instance = None
 if API_KEY_AVAILABLE:
     try:
-        # Initialize with verbose=True for tool execution details in web UI
-        chatbot_instance = MealPlanningChatbot(verbose=True)
-        logger.info("Chatbot initialized for chat interface (verbose mode enabled)")
+        # Initialize with verbose=False to reduce log noise (focusing on shop)
+        chatbot_instance = MealPlanningChatbot(verbose=False)
+        logger.info("Chatbot initialized for chat interface (verbose mode disabled)")
     except Exception as e:
         logger.warning(f"Could not initialize chatbot: {e}")
 
 # Progress tracking for streaming updates
 progress_queues = {}  # session_id -> queue
 progress_lock = threading.Lock()
+
+# State change broadcasting for cross-tab synchronization
+state_change_queues = {}  # tab_id -> queue
+state_change_lock = threading.Lock()
 
 # Shopping list generation locks (prevent duplicate work)
 shopping_list_locks = {}  # meal_plan_id -> Lock
@@ -190,11 +215,72 @@ def progress_stream():
     return Response(generate(), mimetype='text/event-stream')
 
 
+def broadcast_state_change(event_type: str, data: dict):
+    """Broadcast a state change event to all listening tabs."""
+    with state_change_lock:
+        for tab_id, tab_queue in list(state_change_queues.items()):
+            try:
+                tab_queue.put({
+                    "type": event_type,
+                    "data": data,
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as e:
+                logger.error(f"Error broadcasting to tab {tab_id}: {e}")
+
+
+def get_state_change_queue(tab_id: str) -> queue.Queue:
+    """Get or create a state change queue for a tab."""
+    with state_change_lock:
+        if tab_id not in state_change_queues:
+            state_change_queues[tab_id] = queue.Queue()
+        return state_change_queues[tab_id]
+
+
+def cleanup_state_change_queue(tab_id: str):
+    """Clean up a state change queue."""
+    with state_change_lock:
+        if tab_id in state_change_queues:
+            del state_change_queues[tab_id]
+
+
+@app.route('/api/state-stream')
+def state_stream():
+    """Server-Sent Events endpoint for cross-tab state synchronization."""
+    tab_id = request.args.get('tab_id', str(uuid.uuid4()))
+
+    def generate():
+        state_queue = get_state_change_queue(tab_id)
+
+        try:
+            while True:
+                try:
+                    # Wait for state changes (with timeout for keepalive)
+                    update = state_queue.get(timeout=30)
+
+                    # Send as SSE
+                    yield f"data: {json.dumps(update)}\n\n"
+
+                except queue.Empty:
+                    # Send keepalive
+                    yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected
+            cleanup_state_change_queue(tab_id)
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
 def restore_session_from_db():
     """
     Restore session data from database if session IDs are missing.
     This handles cases where user returns after closing browser.
     """
+    # Don't restore if user explicitly cleared the plan
+    if session.get('plan_cleared'):
+        return
+
     if 'meal_plan_id' not in session:
         # Get most recent meal plan
         recent_plans = assistant.db.get_recent_meal_plans(limit=1)
@@ -286,8 +372,35 @@ def shop_page():
     restore_session_from_db()
 
     # Get current shopping list if exists
+    # IMPORTANT: Always fetch LATEST shopping list for current meal plan
+    # (background thread may have regenerated it without updating session)
     current_list = None
-    if 'shopping_list_id' in session:
+    if 'meal_plan_id' in session:
+        try:
+            meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
+            if meal_plan:
+                # Query for most recent grocery list for this week
+                with sqlite3.connect(assistant.db.user_db) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT id FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
+                        (meal_plan.week_of,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        latest_shopping_list_id = row['id']
+                        # Update session with latest ID
+                        session['shopping_list_id'] = latest_shopping_list_id
+                        logger.info(f"Loaded latest shopping list: {latest_shopping_list_id}")
+
+                        grocery_list = assistant.db.get_grocery_list(latest_shopping_list_id)
+                        if grocery_list:
+                            current_list = grocery_list.to_dict()
+        except Exception as e:
+            logger.error(f"Error loading shopping list: {e}")
+    elif 'shopping_list_id' in session:
+        # Fallback: use session ID if no meal plan
         try:
             grocery_list = assistant.db.get_grocery_list(session['shopping_list_id'])
             if grocery_list:
@@ -310,18 +423,44 @@ def cook_page():
     restore_session_from_db()
 
     # Get current meal plan if exists
-    current_meals = None
+    current_plan = None
     if 'meal_plan_id' in session:
         try:
             meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
             if meal_plan:
-                current_meals = [meal.to_dict() for meal in meal_plan.meals]
+                # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
+                enriched_meals = []
+                for meal in meal_plan.meals:
+                    meal_dict = meal.to_dict()
+                    # Flatten recipe fields for frontend compatibility
+                    if meal.recipe:
+                        meal_dict['recipe_id'] = meal.recipe.id
+                        meal_dict['recipe_name'] = meal.recipe.name
+                        meal_dict['description'] = meal.recipe.description
+                        meal_dict['estimated_time'] = meal.recipe.estimated_time
+                        meal_dict['cuisine'] = meal.recipe.cuisine
+                        meal_dict['difficulty'] = meal.recipe.difficulty
+                    # Format date nicely (e.g., "Friday, November 1")
+                    date_str = meal_dict.pop('date', None)
+                    if date_str:
+                        from datetime import datetime
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                        meal_dict['meal_date'] = date_obj.strftime('%A, %B %d')
+                    else:
+                        meal_dict['meal_date'] = date_str
+                    enriched_meals.append(meal_dict)
+
+                current_plan = {
+                    'id': meal_plan.id,
+                    'week_of': meal_plan.week_of,
+                    'meals': enriched_meals,
+                }
         except Exception as e:
             logger.error(f"Error loading meal plan for cook page: {e}")
 
     return render_template(
         'cook.html',
-        current_meals=current_meals,
+        current_plan=current_plan,
         api_key_available=API_KEY_AVAILABLE,
     )
 
@@ -379,6 +518,48 @@ def api_plan_meals():
             # Store meal plan ID in session
             session['meal_plan_id'] = result['meal_plan_id']
 
+            # Broadcast state change to all tabs
+            broadcast_state_change('meal_plan_changed', {
+                'meal_plan_id': result['meal_plan_id'],
+                'week_of': week_of
+            })
+            logger.info(f"Broadcasted meal_plan_changed event")
+
+            # Auto-regenerate shopping list in BACKGROUND THREAD (same as swap-meal)
+            def regenerate_shopping_list_async():
+                """Background thread to auto-generate shopping list for new plan."""
+                try:
+                    logger.info(f"[Background] Auto-generating shopping list for new plan {result['meal_plan_id']}")
+                    shop_result = assistant.create_shopping_list(result['meal_plan_id'])
+
+                    if shop_result.get("success"):
+                        new_shopping_list_id = shop_result["grocery_list_id"]
+                        logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
+
+                        # Update session with new shopping list ID
+                        # Note: session updates in background thread require app context
+                        with app.app_context():
+                            from flask import session as bg_session
+                            # Can't modify session from background thread reliably
+                            # Will be updated when user visits Shop tab
+                            pass
+
+                        # Broadcast shopping list change to all tabs
+                        broadcast_state_change('shopping_list_changed', {
+                            'shopping_list_id': new_shopping_list_id,
+                            'meal_plan_id': result['meal_plan_id']
+                        })
+                        logger.info(f"[Background] Broadcasted shopping_list_changed event")
+                    else:
+                        logger.error(f"[Background] Shopping list generation failed: {shop_result.get('error')}")
+                except Exception as e:
+                    logger.error(f"[Background] Error auto-generating shopping list: {e}", exc_info=True)
+
+            # Start background thread (daemon=True so it doesn't block Flask shutdown)
+            thread = threading.Thread(target=regenerate_shopping_list_async, daemon=True)
+            thread.start()
+            logger.info("Started background thread for shopping list generation")
+
             # Get explanation only if requested (saves ~3-5s per plan)
             if include_explanation and assistant.is_agentic:
                 logger.info("Generating plan explanation...")
@@ -409,6 +590,41 @@ def api_swap_meal():
             date=data['date'],
             requirements=data['requirements'],
         )
+
+        if result.get("success"):
+            # Broadcast meal plan change immediately
+            broadcast_state_change('meal_plan_changed', {
+                'meal_plan_id': meal_plan_id,
+                'date_changed': data['date']
+            })
+            logger.info(f"Broadcasted meal_plan_changed event")
+
+            # Auto-regenerate shopping list in BACKGROUND THREAD
+            def regenerate_shopping_list_async():
+                """Background thread to regenerate shopping list and broadcast."""
+                try:
+                    logger.info(f"[Background] Regenerating shopping list for meal plan {meal_plan_id}")
+                    shop_result = assistant.create_shopping_list(meal_plan_id)
+
+                    if shop_result.get("success"):
+                        new_shopping_list_id = shop_result["grocery_list_id"]
+                        logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
+
+                        # Broadcast shopping list changed event
+                        broadcast_state_change('shopping_list_changed', {
+                            'shopping_list_id': new_shopping_list_id,
+                            'meal_plan_id': meal_plan_id,
+                        })
+                        logger.info(f"[Background] Broadcasted shopping_list_changed event")
+                    else:
+                        logger.warning(f"[Background] Failed to auto-generate shopping list: {shop_result.get('error')}")
+                except Exception as e:
+                    logger.error(f"[Background] Error auto-generating shopping list: {e}")
+
+            # Start background thread
+            thread = threading.Thread(target=regenerate_shopping_list_async, daemon=True)
+            thread.start()
+            logger.info("Started background thread for shopping list regeneration")
 
         return jsonify(result)
 
@@ -455,17 +671,40 @@ def api_create_shopping_list():
 
         try:
             logger.info(f"Creating shopping list for {meal_plan_id}")
+
+            # DEBUG: Check meal plan details
+            meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+            if meal_plan:
+                logger.debug(f"Meal plan has {len(meal_plan.meals)} meals")
+                for i, meal in enumerate(meal_plan.meals):
+                    logger.debug(f"  Meal {i+1}: {meal.recipe.name} (ID: {meal.recipe.id})")
+                    logger.debug(f"    Enriched: {bool(meal.recipe.ingredients_structured)}")
+                    logger.debug(f"    Raw ingredients count: {len(meal.recipe.ingredients_raw)}")
+            else:
+                logger.error(f"Meal plan {meal_plan_id} not found!")
+
             if scaling_instructions:
                 logger.info(f"Scaling: {scaling_instructions}")
 
+            logger.info("Calling assistant.create_shopping_list()...")
             result = assistant.create_shopping_list(
                 meal_plan_id,
                 scaling_instructions=scaling_instructions
             )
+            logger.info(f"Shopping list creation result: success={result.get('success')}")
 
-            if result["success"]:
+            if result.get("success"):
+                logger.debug(f"Shopping list ID: {result.get('grocery_list_id')}")
                 # Store shopping list ID in session
                 session['shopping_list_id'] = result['grocery_list_id']
+
+                # Broadcast state change to all tabs
+                broadcast_state_change('shopping_list_changed', {
+                    'shopping_list_id': result['grocery_list_id'],
+                    'meal_plan_id': meal_plan_id
+                })
+            else:
+                logger.error(f"Shopping list creation failed: {result.get('error')}")
 
             return jsonify(result)
         finally:
@@ -567,11 +806,15 @@ def api_chat():
         session_id = data.get('session_id', 'default')
         selected_dates = data.get('selected_dates')  # Get selected dates from UI
         week_start = data.get('week_start')          # Get week start from UI
+        context = data.get('context')                # Get page context (e.g., 'shop')
+        verbose = data.get('verbose', False)         # Get verbose mode preference
 
         if not message:
             return jsonify({"success": False, "error": "No message provided"}), 400
 
         logger.info(f"Chat message: {message}")
+        if context:
+            logger.info(f"Chat context: {context}")
         if selected_dates:
             logger.info(f"Selected dates from UI: {selected_dates}")
         if week_start:
@@ -599,13 +842,19 @@ def api_chat():
         chatbot_instance.verbose_callback = verbose_callback
 
         # Set up progress callback for this session (for agents)
-        set_agent_progress_callback(session_id)
+        set_agent_progress_callback(session_id, enable_verbose=verbose)
 
         # Emit initial progress
         emit_progress(session_id, "Processing your request...")
 
+        # Modify message if in shop context to prioritize add_extra_items
+        actual_message = message
+        if context == 'shop':
+            actual_message = f"[SHOP MODE: User is on the shopping list page. For simple items like 'bread', 'milk', 'bananas', use add_extra_items tool, NOT recipe search or meal planning tools.] {message}"
+            logger.info(f"Modified message for shop context: {actual_message}")
+
         # Get AI response
-        response = chatbot_instance.chat(message)
+        response = chatbot_instance.chat(actual_message)
 
         # Save pending swap options to session
         session['pending_swap_options'] = chatbot_instance.pending_swap_options
@@ -621,16 +870,17 @@ def api_chat():
         # Check if chatbot created or changed meal plan
         if chatbot_instance.current_meal_plan_id:
             session['meal_plan_id'] = chatbot_instance.current_meal_plan_id
+            # Clear the plan_cleared flag since we now have a plan
+            session.pop('plan_cleared', None)
             if chatbot_instance.current_meal_plan_id != old_meal_plan_id:
                 # New meal plan created
                 plan_changed = True
                 logger.info(f"New meal plan created: {chatbot_instance.current_meal_plan_id}")
             else:
-                # Same meal plan - assume it was modified if user mentioned swap/change/replace
-                modification_keywords = ['swap', 'change', 'replace', 'modify', 'different']
-                if any(keyword in message.lower() for keyword in modification_keywords):
-                    plan_changed = True
-                    logger.info(f"Detected modification request in message: '{message}' - assuming plan changed")
+                # Same meal plan - always assume it was modified to refresh UI
+                # User can use "Clear Plan" button if they want to start fresh
+                plan_changed = True
+                logger.info(f"Plan interaction detected - refreshing UI for plan: {chatbot_instance.current_meal_plan_id}")
 
         if chatbot_instance.current_shopping_list_id:
             session['shopping_list_id'] = chatbot_instance.current_shopping_list_id
@@ -643,6 +893,55 @@ def api_chat():
                 if any(keyword in message.lower() for keyword in modification_keywords):
                     shopping_changed = True
                     logger.info(f"Detected shopping list modification request in message: '{message}'")
+                # If meal plan changed, shopping list was likely updated incrementally
+                elif plan_changed:
+                    shopping_changed = True
+                    logger.info(f"Meal plan changed - shopping list updated incrementally")
+
+        # Broadcast meal plan change immediately (don't wait for shopping list)
+        if plan_changed and chatbot_instance.current_meal_plan_id:
+            broadcast_state_change('meal_plan_changed', {
+                'meal_plan_id': chatbot_instance.current_meal_plan_id,
+            })
+            logger.info(f"Broadcasted meal_plan_changed event")
+
+        # Auto-regenerate shopping list in BACKGROUND THREAD (parallel with response)
+        if plan_changed and chatbot_instance.current_meal_plan_id and not chatbot_instance.pending_swap_options:
+            meal_plan_id = chatbot_instance.current_meal_plan_id
+
+            def regenerate_shopping_list_async():
+                """Background thread to regenerate shopping list and broadcast."""
+                try:
+                    logger.info(f"[Background] Regenerating shopping list for meal plan {meal_plan_id}")
+                    shop_result = assistant.create_shopping_list(meal_plan_id)
+
+                    if shop_result.get("success"):
+                        new_shopping_list_id = shop_result["grocery_list_id"]
+                        logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
+
+                        # Broadcast shopping list changed event
+                        broadcast_state_change('shopping_list_changed', {
+                            'shopping_list_id': new_shopping_list_id,
+                            'meal_plan_id': meal_plan_id,
+                        })
+                        logger.info(f"[Background] Broadcasted shopping_list_changed event")
+                    else:
+                        logger.warning(f"[Background] Failed to auto-generate shopping list: {shop_result.get('error')}")
+                except Exception as e:
+                    logger.error(f"[Background] Error auto-generating shopping list: {e}")
+
+            # Start background thread
+            thread = threading.Thread(target=regenerate_shopping_list_async, daemon=True)
+            thread.start()
+            logger.info("Started background thread for shopping list regeneration")
+
+        # If shopping list was changed synchronously (e.g., via direct shop commands), broadcast it
+        if shopping_changed and chatbot_instance.current_shopping_list_id and not plan_changed:
+            broadcast_state_change('shopping_list_changed', {
+                'shopping_list_id': chatbot_instance.current_shopping_list_id,
+                'meal_plan_id': chatbot_instance.current_meal_plan_id,
+            })
+            logger.info(f"Broadcasted shopping_list_changed event")
 
         # Emit completion
         emit_progress(session_id, "Done!", "complete")
@@ -831,41 +1130,49 @@ def api_preload_plan_data():
         # Priority 1: Create shopping list if it doesn't exist
         shopping_result = None
         if not session.get('shopping_list_id'):
-            logger.info("Generating shopping list (this may take 20-40 seconds)...")
-            shopping_result = assistant.create_shopping_list(meal_plan_id)
-            if shopping_result["success"]:
-                session['shopping_list_id'] = shopping_result['grocery_list_id']
-                logger.info(f"Created shopping list: {shopping_result['grocery_list_id']}")
-        else:
-            logger.info("Shopping list already exists, skipping generation")
-
-        # Priority 2: Preload cook page recipe details (parallel fetch for speed)
-        recipes_preloaded = 0
-        try:
+            # Check if a shopping list already exists for this week
             meal_plan = assistant.db.get_meal_plan(meal_plan_id)
             if meal_plan:
-                logger.info(f"Preloading {len(meal_plan.meals)} recipes for cook page...")
-                # Use embedded Recipe objects (Phase 2 enhancement)
-                recipe_ids = [meal.recipe.id for meal in meal_plan.meals if meal.recipe]
-                recipes_preloaded = len(recipe_ids)
+                existing_list = assistant.db.get_grocery_list_by_week(meal_plan.week_of)
+                if existing_list:
+                    session['shopping_list_id'] = existing_list.id
+                    logger.info(f"Found existing shopping list: {existing_list.id}, restoring to session")
+                else:
+                    logger.info("Generating shopping list (this may take 20-40 seconds)...")
+                    shopping_result = assistant.create_shopping_list(meal_plan_id)
+                    if shopping_result["success"]:
+                        session['shopping_list_id'] = shopping_result['grocery_list_id']
+                        logger.info(f"Created shopping list: {shopping_result['grocery_list_id']}")
+        else:
+            logger.info("Shopping list already exists in session, skipping generation")
 
-                # Preload cooking guides for each recipe
-                def fetch_cooking_guide(recipe_id):
-                    try:
-                        result = assistant.get_cooking_guide(recipe_id)
-                        return (recipe_id, result["success"])
-                    except Exception as e:
-                        logger.error(f"Error preloading cooking guide for {recipe_id}: {e}")
-                        return (recipe_id, False)
+        # Priority 2: Preload cook page recipe details (DISABLED - focusing on shop)
+        recipes_preloaded = 0
+        # try:
+        #     meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+        #     if meal_plan:
+        #         logger.info(f"Preloading {len(meal_plan.meals)} recipes for cook page...")
+        #         # Use embedded Recipe objects (Phase 2 enhancement)
+        #         recipe_ids = [meal.recipe.id for meal in meal_plan.meals if meal.recipe]
+        #         recipes_preloaded = len(recipe_ids)
 
-                with ThreadPoolExecutor(max_workers=min(5, len(recipe_ids))) as executor:
-                    futures = {executor.submit(fetch_cooking_guide, recipe_id): recipe_id
-                              for recipe_id in recipe_ids}
-                    guides_loaded = sum(1 for future in as_completed(futures) if future.result()[1])
+        #         # Preload cooking guides for each recipe
+        #         def fetch_cooking_guide(recipe_id):
+        #             try:
+        #                 result = assistant.get_cooking_guide(recipe_id)
+        #                 return (recipe_id, result["success"])
+        #             except Exception as e:
+        #                 logger.error(f"Error preloading cooking guide for {recipe_id}: {e}")
+        #                 return (recipe_id, False)
 
-                logger.info(f"Preloaded {guides_loaded}/{len(recipe_ids)} cooking guides")
-        except Exception as e:
-            logger.error(f"Error preloading cook page data: {e}")
+        #         with ThreadPoolExecutor(max_workers=min(5, len(recipe_ids))) as executor:
+        #             futures = {executor.submit(fetch_cooking_guide, recipe_id): recipe_id
+        #                       for recipe_id in recipe_ids}
+        #             guides_loaded = sum(1 for future in as_completed(futures) if future.result()[1])
+
+        #         logger.info(f"Preloaded {guides_loaded}/{len(recipe_ids)} cooking guides")
+        # except Exception as e:
+        #     logger.error(f"Error preloading cook page data: {e}")
 
         return jsonify({
             "success": True,
@@ -878,6 +1185,32 @@ def api_preload_plan_data():
 
     except Exception as e:
         logger.error(f"Error preloading data: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/plan/clear', methods=['POST'])
+def api_clear_plan():
+    """Clear the current meal plan from session (start fresh)."""
+    try:
+        # Clear meal plan and shopping list from session
+        old_plan_id = session.get('meal_plan_id')
+        old_shopping_id = session.get('shopping_list_id')
+
+        session.pop('meal_plan_id', None)
+        session.pop('shopping_list_id', None)
+
+        # Set flag to prevent auto-restore
+        session['plan_cleared'] = True
+
+        logger.info(f"Cleared meal plan {old_plan_id} and shopping list {old_shopping_id} from session")
+
+        return jsonify({
+            "success": True,
+            "message": "Plan cleared successfully"
+        })
+
+    except Exception as e:
+        logger.error(f"Error clearing plan: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 

@@ -52,7 +52,7 @@ class PlanningState(TypedDict):
 class AgenticPlanningAgent:
     """LLM-powered agent for generating intelligent weekly meal plans."""
 
-    def __init__(self, db: DatabaseInterface, api_key: Optional[str] = None, progress_callback=None):
+    def __init__(self, db: DatabaseInterface, api_key: Optional[str] = None, progress_callback=None, verbose_callback=None):
         """
         Initialize Planning Agent with LLM.
 
@@ -60,9 +60,11 @@ class AgenticPlanningAgent:
             db: Database interface instance
             api_key: Anthropic API key (or from env)
             progress_callback: Optional callback function for progress updates
+            verbose_callback: Optional callback for verbose/debug output (AI reasoning)
         """
         self.db = db
         self.progress_callback = progress_callback
+        self.verbose_callback = verbose_callback
 
         # Initialize Anthropic client
         api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -79,6 +81,12 @@ class AgenticPlanningAgent:
         self.graph = self._build_graph()
 
         logger.info("Agentic Planning Agent initialized with LLM")
+
+    def _verbose_output(self, message: str):
+        """Send verbose output to both logger and callback if enabled."""
+        logger.info(message)
+        if self.verbose_callback:
+            self.verbose_callback(message)
 
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph state graph for planning workflow."""
@@ -312,7 +320,7 @@ Keep keywords simple and searchable. Do NOT use complex phrases."""
             )
 
             search_plan = response.content[0].text
-            logger.info(f"LLM search plan:\n{search_plan}")
+            self._verbose_output(f"🔍 AI Search Plan:\n{search_plan}")
 
             # Parse search queries and execute them
             recipe_candidates = []
@@ -383,7 +391,7 @@ Keep keywords simple and searchable. Do NOT use complex phrases."""
                     unique_candidates.append(candidate)
 
             state["recipe_candidates"] = unique_candidates
-            logger.info(f"Found {len(unique_candidates)} recipe candidates")
+            self._verbose_output(f"✓ Found {len(unique_candidates)} recipe candidates")
 
             return state
 
@@ -469,7 +477,7 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             )
 
             selection_text = response.content[0].text
-            logger.info(f"LLM meal selections:\n{selection_text}")
+            self._verbose_output(f"🎯 AI Meal Selections:\n{selection_text}")
 
             # Parse LLM selections
             selected_meals = []

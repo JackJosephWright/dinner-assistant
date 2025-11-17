@@ -9,7 +9,7 @@
             <i class="fas fa-fire text-orange-600"></i> Cooking Guide
         </h1>
         <p class="mt-2 text-gray-600">
-            {% if current_meals %}
+            {% if current_plan %}
             Cook this week's meals or search for new recipes
             {% else %}
             Search for recipes and get step-by-step cooking instructions
@@ -17,24 +17,24 @@
         </p>
     </div>
 
-    {% if current_meals %}
+    {% if current_plan %}
     <!-- This Week's Meals Section -->
     <div class="bg-gradient-to-r from-orange-50 to-red-50 rounded-lg shadow-lg p-6 mb-6">
         <div class="flex items-center justify-between mb-4">
             <h2 class="text-2xl font-bold text-gray-900">
                 <i class="fas fa-calendar-week text-orange-600"></i> This Week's Meals
             </h2>
-            <span class="text-sm text-gray-600">{{ current_meals|length }} recipes</span>
+            <span class="text-sm text-gray-600">{{ current_plan.meals|length }} recipes</span>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {% for meal in current_meals %}
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="mealCardsGrid">
+            {% for meal in current_plan.meals %}
             <div onclick="loadRecipe('{{ meal.recipe_id }}')"
                  class="bg-white rounded-lg shadow hover:shadow-xl transition-shadow cursor-pointer p-4 border-2 border-transparent hover:border-orange-400">
                 <div class="flex items-start justify-between mb-2">
                     <h3 class="font-semibold text-gray-900 flex-1">{{ meal.recipe_name }}</h3>
                     <span class="ml-2 text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded-full">
-                        {{ meal.meal_date.strftime('%a') if meal.meal_date else 'Day ' + loop.index|string }}
+                        {{ meal.meal_date if meal.meal_date else 'Day ' + loop.index|string }}
                     </span>
                 </div>
                 <div class="text-sm text-gray-600 space-y-1">
@@ -149,6 +149,14 @@
 
 {% block extra_scripts %}
 <script>
+// Store embedded recipe data from MealPlan (Phase 2: 0-query architecture)
+const embeddedRecipes = {};
+{% if current_plan %}
+{% for meal in current_plan.meals %}
+embeddedRecipes[{{ meal.recipe_id }}] = {{ meal.recipe | tojson }};
+{% endfor %}
+{% endif %}
+
 // Check URL for recipe parameter
 const urlParams = new URLSearchParams(window.location.search);
 const recipeId = urlParams.get('recipe');
@@ -232,6 +240,27 @@ async function loadRecipe(recipeId) {
     document.getElementById('recipeContainer').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     try {
+        // First check if recipe is embedded in MealPlan (0-query architecture)
+        if (embeddedRecipes[recipeId]) {
+            console.log('Using embedded recipe data (0 queries)');
+            const recipeData = embeddedRecipes[recipeId];
+            displayRecipe({
+                success: true,
+                recipe_name: recipeData.name,
+                ingredients: recipeData.ingredients,
+                steps: recipeData.steps,
+                servings: recipeData.servings,
+                estimated_time: recipeData.estimated_time,
+                cuisine: recipeData.cuisine,
+                difficulty: recipeData.difficulty,
+            });
+            recipeDetails.classList.remove('hidden');
+            loading.classList.add('hidden');
+            return;
+        }
+
+        // Fallback: Fetch from API (for recipes not in current plan)
+        console.log('Recipe not in plan, fetching from API...');
         const response = await fetch(`/api/cook/${recipeId}`);
         const result = await response.json();
 
@@ -328,5 +357,96 @@ function displayRecipe(data) {
         </div>
     `;
 }
+
+// SSE State Synchronization (cross-tab)
+let stateEventSource = null;
+let tabId = 'cook_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+async function updateMealDisplay() {
+    /**
+     * Update meal cards dynamically without page reload (like Plan tab).
+     * Fetches latest MealPlan and updates embedded recipes + meal cards.
+     */
+    try {
+        const response = await fetch('/api/plan/current');
+        const result = await response.json();
+
+        if (result.success && result.plan) {
+            console.log('Updating meal display with', result.plan.meals.length, 'meals');
+
+            // Update embedded recipes store
+            for (const meal of result.plan.meals) {
+                embeddedRecipes[meal.recipe_id] = meal.recipe;
+            }
+
+            // Update meal cards grid
+            const grid = document.getElementById('mealCardsGrid');
+            if (grid) {
+                grid.innerHTML = result.plan.meals.map(meal => `
+                    <div onclick="loadRecipe('${meal.recipe_id}')"
+                         class="bg-white rounded-lg shadow hover:shadow-xl transition-shadow cursor-pointer p-4 border-2 border-transparent hover:border-orange-400">
+                        <div class="flex items-start justify-between mb-2">
+                            <h3 class="font-semibold text-gray-900 flex-1">${meal.recipe_name}</h3>
+                            <span class="ml-2 text-xs bg-orange-100 text-orange-800 px-2 py-1 rounded-full">
+                                ${meal.meal_date || 'Day'}
+                            </span>
+                        </div>
+                        <div class="text-sm text-gray-600 space-y-1">
+                            <div><i class="fas fa-clock text-orange-500"></i> ${meal.estimated_time} min</div>
+                            ${meal.cuisine ? `<div><i class="fas fa-globe text-orange-500"></i> ${meal.cuisine}</div>` : ''}
+                            <div><i class="fas fa-signal text-orange-500"></i> ${meal.difficulty || 'Medium'}</div>
+                        </div>
+                        <div class="mt-3 text-center">
+                            <button class="text-orange-600 hover:text-orange-800 font-medium text-sm">
+                                <i class="fas fa-book-open"></i> View Recipe
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Update recipe count
+            const countElement = document.querySelector('.text-sm.text-gray-600');
+            if (countElement) {
+                countElement.textContent = `${result.plan.meals.length} recipes`;
+            }
+        }
+    } catch (error) {
+        console.error('Error updating meal display:', error);
+        // Fallback to page reload on error
+        window.location.reload();
+    }
+}
+
+function startStateStream() {
+    // Close existing stream if any
+    if (stateEventSource) {
+        stateEventSource.close();
+    }
+
+    // Create new SSE connection for state changes
+    stateEventSource = new EventSource(`/api/state-stream?tab_id=${tabId}`);
+
+    stateEventSource.onmessage = (event) => {
+        const update = JSON.parse(event.data);
+
+        if (update.type === 'meal_plan_changed') {
+            console.log('Meal plan changed, updating meal display...');
+            // Dynamic update without page reload (like Plan tab)
+            updateMealDisplay();
+        }
+        // Ignore shopping_list_changed (not relevant to cook tab)
+        // Ignore keepalive messages
+    };
+
+    stateEventSource.onerror = (error) => {
+        console.error('State stream error:', error);
+        stateEventSource.close();
+        stateEventSource = null;
+    };
+}
+
+// Start SSE listener when page loads
+startStateStream();
 </script>
 {% endblock %}

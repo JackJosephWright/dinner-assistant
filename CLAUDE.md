@@ -9,7 +9,8 @@ AI-powered multi-agent meal planning system using MCP (Model Context Protocol) a
 - **Protocol**: MCP (Model Context Protocol) for tool servers
 - **Database**: SQLite (recipes.db, user_data.db)
 - **LLM**: Anthropic Claude (via API)
-- **Testing**: pytest (77 tests, 92% model coverage)
+- **Web Framework**: Flask with SSE (Server-Sent Events)
+- **Testing**: pytest (103 passing tests, Playwright for web UI)
 
 ## Architecture
 
@@ -120,32 +121,90 @@ SQLite DBs (recipes.db, user_data.db)
 - `docs/MEAL_PLAN_WORKFLOW_REPORT.md` - Complete workflow documentation
 - `demo_meal_plan_workflow.py` - Live demonstration script
 
-### 🔄 Phase 3: Chat Integration - In Progress
-**What's Complete (2025-10-29):**
-- ✅ **Hybrid backup matching strategy** - Vague swap requests now work (src/chatbot.py:182-287)
-  - Tier 1: Fast algorithmic checks (vague terms, direct match, related terms)
-  - Tier 2: LLM semantic fallback using Claude Haiku
-  - Verbose debug output shows which tier matched
-- ✅ **Improved LLM recipe selection** - Fixed Recipe ID vs index confusion (src/chatbot.py:71-197)
-  - Enhanced prompt with 6-digit ID examples
-  - Step-by-step instructions to prevent hallucination
-  - Automatic filling of missing slots when LLM returns invalid IDs
-- ✅ **Verbose meal plan display** - Always shows current plan state after each interaction (src/chatbot.py:1044-1071)
-  - Shows all meals with ingredient counts
-  - Displays backup recipes available
-  - Clear visibility into meal plan state
+### ✅ Phase 3: Web UI & SSE Integration - Complete (2025-11-17)
+**What's Complete:**
+- ✅ **SSE Cross-Tab Synchronization** - Real-time state sync across browser tabs (src/web/app.py:29-64)
+  - State broadcasting infrastructure with EventSource
+  - Automatic shopping list regeneration on meal plan changes
+  - Plan tab updates immediately after meal swap
+  - Shop tab auto-reloads when shopping list changes
+  - Cook tab uses embedded recipes and SSE updates
+  - No manual regeneration needed - always stays current
 
-**Test Results:**
-- Multi-requirement planning working: "5 meals, one chicken, one beef, one thai" → 5 meals created ✅
-- Vague swap requests working: "something else, no corned beef" → uses backup queue ✅
-- All swaps complete in <10ms (95% faster than fresh search) ✅
+- ✅ **Parallel LLM Execution** - Plan and Shop LLMs run concurrently
+  - Planning LLM broadcasts `meal_plan_changed` immediately
+  - Shopping LLM runs in background thread (daemon)
+  - Broadcasts `shopping_list_changed` when complete
+  - **5-10 second faster** Plan tab response time
+  - Auto-regeneration on BOTH meal swap AND new plan creation
 
-**Benefits Ready:**
-- ✅ 0-query operations (instant responses)
-- ✅ Offline capability (no DB after load)
-- ✅ Rich filtering (by day, type, allergen, category)
-- ✅ Shopping list generation (one method call)
-- ✅ Allergen detection (across entire plan)
+- ✅ **Cook Tab 0-Query Architecture** - Embedded recipes eliminate DB queries (2025-11-17)
+  - `/cook` route embeds full Recipe objects in current_plan (src/web/app.py:368-438)
+  - JavaScript stores embedded recipes (cook.html:152-158)
+  - `loadRecipe()` checks embedded data first, API fallback (cook.html:230-280)
+  - `updateMealDisplay()` for dynamic SSE updates without reload (cook.html:365-450)
+  - SSE listener triggers dynamic update instead of page reload
+  - Matches Plan tab architecture pattern
+
+- ✅ **Shop Tab Smart List Loading** - Always shows latest shopping list (2025-11-17)
+  - `/shop` route queries for LATEST grocery list by week_of (src/web/app.py:368-409)
+  - No longer relies solely on session ID (background thread can't update session)
+  - Automatically picks up new shopping list after background regeneration
+  - Fixes bug where Shop tab showed old recipes after creating new plan
+
+- ✅ **Flask Web Application** - Full-featured web interface (src/web/app.py)
+  - Plan tab: Interactive meal planning with chat interface
+  - Shop tab: Organized shopping lists by category, always current
+  - Cook tab: Recipe cooking guides with embedded recipes and SSE
+  - Session-based state management
+  - Progress streaming via SSE
+
+**Test Coverage (2025-11-07):**
+- **103 tests passing**, 20 failing, 7 errors
+- Legacy pre-Phase 2 tests archived to `tests/legacy/`
+- New SSE tests: `tests/web/test_state_sync.py` (11 tests, 10 passing)
+- Shopping invalidation tests: `tests/web/test_shopping_invalidation.py` (10 tests, 8 passing)
+- Playwright integration tests with webapp-testing skill
+- See `tests/TEST_STATUS.md` for full breakdown
+
+**Architecture:**
+```
+User creates/swaps meal in Plan tab
+    ↓
+Backend updates meal plan
+    ↓
+✨ IMMEDIATE: Broadcast meal_plan_changed (Plan tab updates ~5-10s)
+    ↓
+[Background Daemon Thread - Non-Blocking]
+    ↓
+Shopping LLM regenerates list (~3-5s parallel)
+    ↓
+✨ Broadcast shopping_list_changed
+    ↓
+    ├─ Shop tab: Reloads, fetches LATEST grocery list from DB
+    └─ Cook tab: Dynamic update with new meals (no page reload)
+```
+
+**Key Files:**
+- `src/web/app.py:29-64` - SSE state broadcasting infrastructure
+- `src/web/app.py:368-409` - Shop route with smart latest list loading
+- `src/web/app.py:392-438` - Cook route with embedded Recipe objects
+- `src/web/app.py:501-534` - Background shopping regeneration (/api/plan)
+- `src/web/app.py:505-538` - Background shopping regeneration (/api/swap-meal)
+- `src/web/app.py:786-829` - Background shopping regeneration (/api/chat)
+- `src/web/templates/plan.html:1265-1292` - Plan tab SSE listener
+- `src/web/templates/shop.html:381-394` - Shop tab SSE listener & auto-reload
+- `src/web/templates/cook.html:152-158` - Embedded recipe storage
+- `src/web/templates/cook.html:230-280` - 0-query loadRecipe() with fallback
+- `src/web/templates/cook.html:365-450` - Dynamic updateMealDisplay()
+- `tests/TEST_STATUS.md` - Complete test suite documentation
+- `tests/legacy/README.md` - Archived test documentation
+- `docs/development/SESSION_2025_11_17.md` - Today's session notes
+
+**Run Web App:**
+```bash
+python3 src/web/app.py  # http://localhost:5000
+```
 
 ### 🤔 Under Consideration - Side Dishes
 **User Request:** "can you add a salad side dish to the honey garlic chicken"
@@ -169,29 +228,33 @@ SQLite DBs (recipes.db, user_data.db)
 - See conversation history for full analysis of pros/cons
 
 ### 📋 Next Steps
-- **Immediate:** Decide on side dish architecture (if implementing)
-- Step 9: Update agents to use embedded recipes
-- Step 10: Design and document chat interface patterns
-- Step 11: Integrate chat with MealPlan objects
+- Add SSE integration to Cook tab (Plan and Shop complete)
+- Fix 20 failing tests (performance benchmarks, chatbot cache, e2e workflows)
+- Resolve 7 test errors (incremental grocery list, contributions)
+- Consider: Side dish support in PlannedMeal
 - Future: Full enrichment of 492K recipes
 
 ## Development Commands
 
 ```bash
 # Run tests
-pytest                              # All tests (77 passing)
+pytest                              # All tests (103 passing, 20 failing, 7 errors)
 pytest tests/unit/                  # Unit tests only
+pytest tests/web/                   # Web UI and SSE tests
 pytest --cov=src --cov-report=html  # With coverage
 
 # Test enhanced data objects
-python3 test_enhanced_recipe.py     # Test Recipe with structured ingredients (7 tests)
-python3 test_database_enriched.py   # Test DatabaseInterface loading (5 tests)
-python3 test_planned_meal.py        # Test PlannedMeal with embedded Recipe (7 tests)
-python3 test_meal_plan.py           # Test MealPlan methods (10 tests)
-python3 demo_meal_plan_workflow.py  # Full workflow demonstration (11 steps)
+pytest tests/unit/test_enhanced_recipe.py     # Recipe with structured ingredients (7 tests)
+pytest tests/unit/test_planned_meal.py        # PlannedMeal with embedded Recipe (7 tests)
+pytest tests/unit/test_meal_plan.py           # MealPlan methods (10 tests)
+
+# Test SSE and web UI
+pytest tests/web/test_state_sync.py           # SSE cross-tab sync (11 tests)
+pytest tests/web/test_shopping_invalidation.py # Shopping list invalidation (10 tests)
 
 # Run application
-./run.sh chat                       # Chatbot mode
+python3 src/web/app.py              # Web UI (http://localhost:5000)
+./run.sh chat                       # Chatbot mode (CLI)
 ./run.sh interactive                # Interactive CLI
 ./run.sh workflow                   # One-shot workflow
 
