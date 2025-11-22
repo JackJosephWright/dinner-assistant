@@ -65,6 +65,23 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 CORS(app)
 
+# Simple user authentication
+USERS = {
+    "admin": "password",
+    "agusta": "password"
+}
+
+def login_required(f):
+    """Decorator to require login for routes."""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session:
+            from flask import redirect, url_for
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
 # Initialize assistant (will use agentic agents if API key is set)
 # Note: We'll set the progress callback per request
 assistant = MealPlanningAssistant(db_dir="data", use_agentic=True)
@@ -184,6 +201,7 @@ def cleanup_progress_queue(session_id: str):
 
 
 @app.route('/api/progress-stream')
+@login_required
 def progress_stream():
     """Server-Sent Events endpoint for progress updates."""
     session_id = request.args.get('session_id', session.get('_id', 'default'))
@@ -198,7 +216,7 @@ def progress_stream():
                     update = progress_queue.get(timeout=30)
 
                     # Send as SSE
-                    yield f"data: {jsonify(update).get_data(as_text=True)}\n\n"
+                    yield f"data: {json.dumps(update)}\n\n"
 
                     # If this is the completion event, close stream
                     if update.get("status") in ["complete", "error"]:
@@ -206,7 +224,7 @@ def progress_stream():
 
                 except queue.Empty:
                     # Send keepalive
-                    yield f"data: {jsonify({'status': 'keepalive'}).get_data(as_text=True)}\n\n"
+                    yield f"data: {json.dumps({'status': 'keepalive'})}\n\n"
 
         except GeneratorExit:
             # Client disconnected
@@ -245,6 +263,7 @@ def cleanup_state_change_queue(tab_id: str):
 
 
 @app.route('/api/state-stream')
+@login_required
 def state_stream():
     """Server-Sent Events endpoint for cross-tab state synchronization."""
     tab_id = request.args.get('tab_id', str(uuid.uuid4()))
@@ -305,7 +324,41 @@ def restore_session_from_db():
                         logger.info(f"Restored shopping_list_id from database: {session['shopping_list_id']}")
 
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login page."""
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        if username in USERS and USERS[username] == password:
+            session['username'] = username
+            logger.info(f"User {username} logged in successfully")
+            from flask import redirect
+            return redirect('/plan')
+        else:
+            return render_template('login.html', error='Invalid username or password')
+
+    # If already logged in, redirect to plan
+    if 'username' in session:
+        from flask import redirect
+        return redirect('/plan')
+
+    return render_template('login.html')
+
+
+@app.route('/logout')
+def logout():
+    """Logout and clear session."""
+    username = session.get('username', 'unknown')
+    session.clear()
+    logger.info(f"User {username} logged out")
+    from flask import redirect
+    return redirect('/login')
+
+
 @app.route('/')
+@login_required
 def index():
     """Home page - redirect to plan."""
     from flask import redirect
@@ -313,6 +366,7 @@ def index():
 
 
 @app.route('/plan')
+@login_required
 def plan_page():
     """Meal planning page."""
     # Restore session from DB if needed
@@ -366,6 +420,7 @@ def plan_page():
 
 
 @app.route('/shop')
+@login_required
 def shop_page():
     """Shopping list page."""
     # Restore session from DB if needed
@@ -417,6 +472,7 @@ def shop_page():
 
 
 @app.route('/cook')
+@login_required
 def cook_page():
     """Cooking guide page."""
     # Restore session from DB if needed
@@ -466,6 +522,7 @@ def cook_page():
 
 
 @app.route('/settings')
+@login_required
 def settings_page():
     """Settings page."""
     try:
@@ -493,6 +550,7 @@ def settings_page():
 
 # API Routes
 @app.route('/api/plan', methods=['POST'])
+@login_required
 def api_plan_meals():
     """Plan meals for the week."""
     try:
@@ -576,6 +634,7 @@ def api_plan_meals():
 
 
 @app.route('/api/swap-meal', methods=['POST'])
+@login_required
 def api_swap_meal():
     """Swap a meal in the current plan."""
     try:
@@ -634,6 +693,7 @@ def api_swap_meal():
 
 
 @app.route('/api/shop', methods=['POST'])
+@login_required
 def api_create_shopping_list():
     """Create shopping list from meal plan."""
     try:
@@ -716,6 +776,7 @@ def api_create_shopping_list():
 
 
 @app.route('/api/cook/<recipe_id>', methods=['GET'])
+@login_required
 def api_get_cooking_guide(recipe_id):
     """Get cooking guide for a recipe."""
     try:
@@ -731,6 +792,7 @@ def api_get_cooking_guide(recipe_id):
 
 
 @app.route('/api/search-recipes', methods=['POST'])
+@login_required
 def api_search_recipes():
     """Search for recipes."""
     try:
@@ -754,6 +816,7 @@ def api_search_recipes():
 
 
 @app.route('/api/preferences', methods=['GET'])
+@login_required
 def api_get_preferences():
     """Get user preferences and stats."""
     try:
@@ -774,6 +837,7 @@ def api_get_preferences():
 
 
 @app.route('/api/meal-history', methods=['GET'])
+@login_required
 def api_get_meal_history():
     """Get meal history."""
     try:
@@ -792,6 +856,7 @@ def api_get_meal_history():
 
 
 @app.route('/api/chat', methods=['POST'])
+@login_required
 def api_chat():
     """Chat with the AI assistant."""
     try:
@@ -823,6 +888,12 @@ def api_chat():
         # Store old IDs to detect changes
         old_meal_plan_id = session.get('meal_plan_id')
         old_shopping_list_id = session.get('shopping_list_id')
+
+        # Restore IDs from session to chatbot to ensure state persistence
+        if old_meal_plan_id:
+            chatbot_instance.current_meal_plan_id = old_meal_plan_id
+        if old_shopping_list_id:
+            chatbot_instance.current_shopping_list_id = old_shopping_list_id
 
         # Pass selected dates to chatbot for meal planning
         if selected_dates:
@@ -965,6 +1036,7 @@ def api_chat():
 
 
 @app.route('/api/onboarding/check', methods=['GET'])
+@login_required
 def api_onboarding_check():
     """Check if user needs onboarding."""
     try:
@@ -983,6 +1055,7 @@ def api_onboarding_check():
 
 
 @app.route('/api/onboarding/start', methods=['POST'])
+@login_required
 def api_onboarding_start():
     """Start or get current onboarding step."""
     try:
@@ -1014,6 +1087,7 @@ def api_onboarding_start():
 
 
 @app.route('/api/onboarding/answer', methods=['POST'])
+@login_required
 def api_onboarding_answer():
     """Process onboarding answer and get next question."""
     try:
@@ -1054,6 +1128,7 @@ def api_onboarding_answer():
 
 
 @app.route('/api/preferences/reset', methods=['POST'])
+@login_required
 def api_preferences_reset():
     """Reset preferences to trigger onboarding again."""
     try:
@@ -1075,6 +1150,7 @@ def api_preferences_reset():
 
 
 @app.route('/api/plan/current', methods=['GET'])
+@login_required
 def api_get_current_plan():
     """Get current meal plan with enriched data."""
     try:
@@ -1118,6 +1194,7 @@ def api_get_current_plan():
 
 
 @app.route('/api/plan/preload', methods=['POST'])
+@login_required
 def api_preload_plan_data():
     """Preload shopping list and cook page data for current meal plan."""
     try:
@@ -1189,6 +1266,7 @@ def api_preload_plan_data():
 
 
 @app.route('/api/plan/clear', methods=['POST'])
+@login_required
 def api_clear_plan():
     """Clear the current meal plan from session (start fresh)."""
     try:
@@ -1215,6 +1293,7 @@ def api_clear_plan():
 
 
 @app.route('/api/performance/metrics', methods=['GET'])
+@login_required
 def api_get_performance_metrics():
     """Get current performance metrics (admin/debugging endpoint)."""
     if not PERFORMANCE_MONITORING_ENABLED or not perf_monitor:
