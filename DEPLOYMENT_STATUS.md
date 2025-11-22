@@ -27,14 +27,15 @@ Your Dinner Assistant app is now live on Google Cloud Run with the full recipe d
 - **Memory:** 4GB
 - **CPU:** 2 cores
 - **Max Instances:** 10
-- **Timeout:** 120 seconds
-- **Current Revision:** dinner-assistant-00004-79b
+- **Timeout:** 300 seconds (5 minutes)
+- **Current Revision:** dinner-assistant-00005-qz5
 
 ### Issues Fixed
 
 1. ✅ **Database Path Issue:** Removed `--chdir` from Dockerfile to ensure correct database path
 2. ✅ **SSE Compatibility:** Fixed Flask `jsonify()` error with gunicorn by using `json.dumps()` instead
 3. ✅ **Database Upload:** Built Docker image locally to bypass Cloud Build's 2GB upload limit
+4. ✅ **Request Timeout:** Increased Cloud Run timeout from 120s to 300s (5 minutes) for slow database searches
 
 ### Commands for Management
 
