@@ -30,5 +30,5 @@ EXPOSE 8080
 # Set Python path
 ENV PYTHONPATH=/app
 
-# Use gunicorn for production
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 4 --timeout 120 src.web.app:app
+# Use gunicorn for production with 5 minute timeout
+CMD exec gunicorn --bind :$PORT --workers 1 --threads 4 --timeout 300 src.web.app:app
