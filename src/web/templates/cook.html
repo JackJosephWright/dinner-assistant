@@ -346,6 +346,76 @@ function displayRecipe(data) {
             </div>
         </div>
 
+        <!-- Meal Feedback Section -->
+        <div class="mt-8 p-6 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border-2 border-blue-200">
+            <h3 class="text-xl font-bold text-gray-900 mb-4 flex items-center">
+                <i class="fas fa-star text-yellow-500 mr-2"></i> Rate This Meal
+            </h3>
+            <p class="text-sm text-gray-600 mb-4">Help us learn your preferences! Rate this meal after cooking.</p>
+
+            <div class="space-y-4">
+                <!-- Star Rating -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">How was it?</label>
+                    <div class="flex items-center gap-2" id="starRating">
+                        <button onclick="setRating(1)" class="star-btn text-3xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="1">★</button>
+                        <button onclick="setRating(2)" class="star-btn text-3xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="2">★</button>
+                        <button onclick="setRating(3)" class="star-btn text-3xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="3">★</button>
+                        <button onclick="setRating(4)" class="star-btn text-3xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="4">★</button>
+                        <button onclick="setRating(5)" class="star-btn text-3xl text-gray-300 hover:text-yellow-400 transition-colors" data-rating="5">★</button>
+                        <span id="ratingText" class="ml-3 text-sm font-medium text-gray-700"></span>
+                    </div>
+                </div>
+
+                <!-- Would Make Again -->
+                <div class="flex items-center">
+                    <input type="checkbox" id="wouldMakeAgain" class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded">
+                    <label for="wouldMakeAgain" class="ml-2 text-sm font-medium text-gray-700">
+                        <i class="fas fa-heart text-red-500"></i> I would make this again
+                    </label>
+                </div>
+
+                <!-- Notes -->
+                <div>
+                    <label for="mealNotes" class="block text-sm font-medium text-gray-700 mb-2">
+                        Notes (modifications, what worked, what didn't)
+                    </label>
+                    <textarea id="mealNotes" rows="3"
+                              class="w-full p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              placeholder="e.g., Doubled the garlic, added more veggies, cooked for 5 min longer..."></textarea>
+                </div>
+
+                <!-- Servings Actual -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label for="servingsActual" class="block text-sm font-medium text-gray-700 mb-2">
+                            Servings Made
+                        </label>
+                        <input type="number" id="servingsActual" value="${data.servings}" min="1" max="20"
+                               class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label for="cookingTimeActual" class="block text-sm font-medium text-gray-700 mb-2">
+                            Actual Time (min)
+                        </label>
+                        <input type="number" id="cookingTimeActual" value="${data.estimated_time}" min="1" max="300"
+                               class="w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500">
+                    </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="pt-4">
+                    <button onclick="submitFeedback()"
+                            class="w-full px-6 py-3 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors shadow-md hover:shadow-lg">
+                        <i class="fas fa-check-circle mr-2"></i> Save Feedback
+                    </button>
+                    <p class="mt-2 text-xs text-center text-gray-500">
+                        Your feedback helps us suggest better meals for you over time
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <div class="mt-6 pt-6 border-t-2 border-gray-200 text-center">
             <button onclick="window.print()" class="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 mr-2">
                 <i class="fas fa-print"></i> Print Recipe
@@ -445,6 +515,95 @@ function startStateStream() {
         stateEventSource = null;
     };
 }
+
+// Meal Feedback Functions
+let currentRecipeId = null;
+let currentRecipeDate = null;
+let selectedRating = 0;
+
+function setRating(rating) {
+    selectedRating = rating;
+    const stars = document.querySelectorAll('.star-btn');
+    const ratingText = document.getElementById('ratingText');
+
+    // Update star colors
+    stars.forEach((star, index) => {
+        if (index < rating) {
+            star.classList.remove('text-gray-300');
+            star.classList.add('text-yellow-400');
+        } else {
+            star.classList.remove('text-yellow-400');
+            star.classList.add('text-gray-300');
+        }
+    });
+
+    // Update rating text
+    const labels = ['', 'Poor', 'Fair', 'Good', 'Great', 'Excellent'];
+    ratingText.textContent = labels[rating];
+}
+
+async function submitFeedback() {
+    // Get form values
+    const rating = selectedRating;
+    const wouldMakeAgain = document.getElementById('wouldMakeAgain').checked;
+    const notes = document.getElementById('mealNotes').value;
+    const servingsActual = parseInt(document.getElementById('servingsActual').value) || null;
+    const cookingTimeActual = parseInt(document.getElementById('cookingTimeActual').value) || null;
+
+    // Find the meal date for the current recipe
+    // Look through embedded recipes to find which meal this is
+    let mealDate = null;
+    {% if current_plan %}
+    {% for meal in current_plan.meals %}
+    if (currentRecipeId === '{{ meal.recipe_id }}') {
+        mealDate = '{{ meal.date }}';
+    }
+    {% endfor %}
+    {% endif %}
+
+    if (!mealDate) {
+        // If not in current plan, we can't save feedback (need a date)
+        alert('This recipe is not in your current meal plan. Feedback can only be saved for planned meals.');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/meal-feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: mealDate,
+                meal_type: 'dinner',
+                user_rating: rating > 0 ? rating : null,
+                would_make_again: wouldMakeAgain,
+                notes: notes || null,
+                servings_actual: servingsActual,
+                cooking_time_actual: cookingTimeActual
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            alert('✓ Feedback saved! This helps us learn your preferences and suggest better meals for you.');
+            // Reset form
+            setRating(0);
+            document.getElementById('wouldMakeAgain').checked = false;
+            document.getElementById('mealNotes').value = '';
+        } else {
+            alert('Error saving feedback: ' + (result.error || 'Unknown error'));
+        }
+    } catch (error) {
+        alert('Error saving feedback: ' + error.message);
+    }
+}
+
+// Update currentRecipeId when recipe is loaded
+const originalLoadRecipe = loadRecipe;
+loadRecipe = async function(recipeId) {
+    currentRecipeId = recipeId;
+    await originalLoadRecipe(recipeId);
+};
 
 // Start SSE listener when page loads
 startStateStream();

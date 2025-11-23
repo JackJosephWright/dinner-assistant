@@ -937,6 +937,80 @@ def api_swap_meal():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/meal-feedback', methods=['POST'])
+@login_required
+def api_submit_meal_feedback():
+    """Submit user feedback for a cooked meal (ratings, notes, etc.)."""
+    try:
+        data = request.json
+        date = data.get('date')
+        meal_type = data.get('meal_type', 'dinner')
+
+        if not date:
+            return jsonify({"success": False, "error": "Date is required"}), 400
+
+        # Find the meal_event for this date/meal_type (should exist from UPSERT in save_meal_plan)
+        import sqlite3
+        with sqlite3.connect(assistant.db.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM meal_events WHERE date = ? AND meal_type = ?",
+                (date, meal_type)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                # Update existing meal_event with feedback
+                event_id = row['id']
+                updates = {}
+
+                if data.get('user_rating') is not None:
+                    updates['user_rating'] = data['user_rating']
+                if data.get('would_make_again') is not None:
+                    updates['would_make_again'] = data['would_make_again']
+                if data.get('notes') is not None:
+                    updates['notes'] = data['notes']
+                if data.get('servings_actual') is not None:
+                    updates['servings_actual'] = data['servings_actual']
+                if data.get('cooking_time_actual') is not None:
+                    updates['cooking_time_actual'] = data['cooking_time_actual']
+
+                # Build UPDATE query dynamically
+                if updates:
+                    set_clauses = ', '.join([f"{k} = ?" for k in updates.keys()])
+                    values = list(updates.values()) + [event_id]
+
+                    cursor.execute(
+                        f"UPDATE meal_events SET {set_clauses} WHERE id = ?",
+                        values
+                    )
+                    conn.commit()
+
+                    logger.info(f"Updated meal_event {event_id} for {date} with feedback: {updates}")
+                    return jsonify({
+                        "success": True,
+                        "message": "Feedback saved successfully",
+                        "event_id": event_id
+                    })
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "No feedback data provided"
+                    }), 400
+            else:
+                # No meal_event found - this meal wasn't planned
+                logger.warning(f"No meal_event found for {date} {meal_type} - cannot save feedback")
+                return jsonify({
+                    "success": False,
+                    "error": f"No planned meal found for {date}. Feedback can only be saved for planned meals."
+                }), 404
+
+    except Exception as e:
+        logger.error(f"Error saving meal feedback: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/shop', methods=['POST'])
 @login_required
 def api_create_shopping_list():

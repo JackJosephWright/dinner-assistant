@@ -150,6 +150,12 @@ class DatabaseInterface:
                 ON meal_events(meal_plan_id)
             """)
 
+            # Unique index for UPSERT pattern: one meal per (date, meal_type)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_meal_events_date_type
+                ON meal_events(date, meal_type)
+            """)
+
             # User profile table (single row for onboarding)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_profile (
@@ -393,9 +399,49 @@ class DatabaseInterface:
                     json.dumps([meal.to_dict() for meal in meal_plan.meals]),
                 ),
             )
+
+            # UPSERT meal_events for user history tracking
+            # This creates/updates one meal_event per (date, meal_type) slot
+            for meal in meal_plan.meals:
+                # Get day of week from date
+                meal_date = datetime.fromisoformat(meal.date)
+                day_of_week = meal_date.strftime("%A")
+
+                # UPSERT: Insert or update if (date, meal_type) already exists
+                cursor.execute("""
+                    INSERT INTO meal_events (
+                        date, day_of_week, meal_type,
+                        recipe_id, recipe_name, recipe_cuisine, recipe_difficulty,
+                        servings_planned,
+                        ingredients_snapshot,
+                        meal_plan_id,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date, meal_type) DO UPDATE SET
+                        recipe_id = excluded.recipe_id,
+                        recipe_name = excluded.recipe_name,
+                        recipe_cuisine = excluded.recipe_cuisine,
+                        recipe_difficulty = excluded.recipe_difficulty,
+                        servings_planned = excluded.servings_planned,
+                        ingredients_snapshot = excluded.ingredients_snapshot,
+                        meal_plan_id = excluded.meal_plan_id
+                """, (
+                    meal.date,
+                    day_of_week,
+                    'dinner',  # Default meal type
+                    meal.recipe.id if meal.recipe else meal.recipe_id,
+                    meal.recipe.name if meal.recipe else '',
+                    meal.recipe.cuisine if meal.recipe else None,
+                    meal.recipe.difficulty if meal.recipe else None,
+                    meal.servings,
+                    json.dumps(meal.recipe.ingredients_raw) if meal.recipe else '[]',
+                    meal_plan.id,
+                    datetime.now().isoformat()
+                ))
+
             conn.commit()
 
-        logger.info(f"Saved meal plan {meal_plan.id}")
+        logger.info(f"Saved meal plan {meal_plan.id} with {len(meal_plan.meals)} meal events")
         return meal_plan.id
 
     def get_meal_plan(self, plan_id: str) -> Optional[MealPlan]:
