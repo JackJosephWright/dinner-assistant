@@ -49,6 +49,7 @@ gcloud run deploy $SERVICE_NAME \
   --allow-unauthenticated \
   --memory 4Gi \
   --cpu 2 \
+  --no-cpu-throttling \
   --timeout 300 \
   --max-instances 10 \
   --min-instances 1 \
