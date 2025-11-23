@@ -41,6 +41,22 @@ def db(temp_db_dir):
 
 
 @pytest.fixture
+def client():
+    """
+    Create a Flask test client for testing web routes.
+
+    Usage in tests:
+        def test_route(client):
+            response = client.get('/some-route')
+            assert response.status_code == 200
+    """
+    from src.web.app import app
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        yield client
+
+
+@pytest.fixture
 def sample_recipe():
     """Sample recipe for testing."""
     return Recipe(

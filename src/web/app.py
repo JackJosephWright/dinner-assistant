@@ -321,12 +321,28 @@ def restore_session_from_db():
     This handles cases where user returns after closing browser.
     Also updates session to latest plan if a newer one exists.
     """
-    # Don't restore if user explicitly cleared the plan
-    if session.get('plan_cleared'):
-        return
-
     # Always get the most recent meal plan and update session if newer
     recent_plans = assistant.db.get_recent_meal_plans(limit=1)
+
+    # If user cleared plan, only show plans created AFTER the clear
+    if session.get('plan_cleared'):
+        if not recent_plans:
+            return  # No plans at all, stay cleared
+
+        # Check if the most recent plan is the same one that was cleared
+        cleared_plan_id = session.get('cleared_plan_id')
+        latest_plan_id = recent_plans[0].id
+
+        if cleared_plan_id == latest_plan_id:
+            # Same plan that was cleared, don't restore it
+            logger.info(f"Honoring plan_cleared flag - not restoring {latest_plan_id}")
+            return
+        else:
+            # A NEW plan was created after clearing, show it
+            session.pop('plan_cleared', None)
+            session.pop('cleared_plan_id', None)
+            logger.info(f"New plan created after clear: {latest_plan_id} (was {cleared_plan_id})")
+
     if recent_plans:
         latest_plan_id = recent_plans[0].id
         current_session_plan_id = session.get('meal_plan_id')

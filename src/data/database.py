@@ -197,6 +197,24 @@ class DatabaseInterface:
                 ON cooking_guides(recipe_id)
             """)
 
+            # Meal plan snapshots table (unified meal plan + grocery list storage)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS meal_plan_snapshots (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    week_of TEXT NOT NULL,
+                    version INTEGER DEFAULT 1,
+                    snapshot_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_snapshots_user_week
+                ON meal_plan_snapshots (user_id, week_of)
+            """)
+
             conn.commit()
             logger.info("User database initialized")
 
@@ -336,12 +354,25 @@ class DatabaseInterface:
         """
         Save a meal plan to the database.
 
+        .. deprecated:: Phase 7
+            This method writes to the legacy meal_plans table.
+            New code should use save_snapshot() instead for snapshot-only architecture.
+            This method is kept for backward compatibility with existing meal plans.
+
         Args:
             meal_plan: MealPlan object
 
         Returns:
             ID of saved meal plan
         """
+        import warnings
+        warnings.warn(
+            "save_meal_plan() writes to legacy meal_plans table. "
+            "Use save_snapshot() for new plans.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         if not meal_plan.id:
             meal_plan.id = f"mp_{meal_plan.week_of}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
@@ -431,6 +462,11 @@ class DatabaseInterface:
         """
         Swap a meal in an existing meal plan.
 
+        .. deprecated:: Phase 7
+            This method modifies the legacy meal_plans table.
+            New code should update snapshot['planned_meals'] instead for snapshot-only architecture.
+            This method is kept for backward compatibility with existing plans.
+
         Args:
             plan_id: Meal plan ID
             date: Date of meal to swap (YYYY-MM-DD)
@@ -439,6 +475,14 @@ class DatabaseInterface:
         Returns:
             Updated MealPlan object or None if not found
         """
+        import warnings
+        warnings.warn(
+            "swap_meal_in_plan() modifies legacy meal_plans table. "
+            "Update snapshot['planned_meals'] for new plans.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         # Get the meal plan
         meal_plan = self.get_meal_plan(plan_id)
         if not meal_plan:
@@ -564,12 +608,25 @@ class DatabaseInterface:
         """
         Save a grocery list to the database.
 
+        .. deprecated:: Phase 7
+            This method writes to the legacy grocery_lists table.
+            New code should update snapshot['grocery_list'] instead for snapshot-only architecture.
+            This method is kept for backward compatibility with existing lists.
+
         Args:
             grocery_list: GroceryList object
 
         Returns:
             ID of saved grocery list
         """
+        import warnings
+        warnings.warn(
+            "save_grocery_list() writes to legacy grocery_lists table. "
+            "Update snapshot['grocery_list'] for new lists.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         if not grocery_list.id:
             grocery_list.id = f"gl_{grocery_list.week_of}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
@@ -1200,3 +1257,114 @@ class DatabaseInterface:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM shopping_extras WHERE week_of = ?", (week_of,))
             conn.commit()
+
+    # ==================== Snapshot Operations ====================
+
+    def save_snapshot(self, snapshot: Dict) -> str:
+        """
+        Save a meal plan snapshot (unified meal plan + grocery list storage).
+
+        Args:
+            snapshot: Snapshot dictionary containing:
+                - id (optional): Snapshot ID (auto-generated if missing)
+                - user_id: User ID
+                - week_of: Week start date (YYYY-MM-DD)
+                - version: Schema version (default: 1)
+                - snapshot_json or all other fields: Will be stored as JSON
+                - created_at (optional): ISO timestamp (auto-generated if missing)
+                - updated_at (optional): ISO timestamp (auto-generated if missing)
+
+        Returns:
+            Snapshot ID
+        """
+        # Auto-generate ID if missing
+        if not snapshot.get('id'):
+            week_of = snapshot['week_of']
+            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+            snapshot['id'] = f"mp_{week_of}_{timestamp}"
+
+        # Set timestamps if missing
+        now = datetime.now().isoformat()
+        if not snapshot.get('created_at'):
+            snapshot['created_at'] = now
+        snapshot['updated_at'] = now
+
+        # Ensure version is set
+        if not snapshot.get('version'):
+            snapshot['version'] = 1
+
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO meal_plan_snapshots
+                (id, user_id, week_of, version, snapshot_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot['id'],
+                    snapshot['user_id'],
+                    snapshot['week_of'],
+                    snapshot['version'],
+                    json.dumps(snapshot),
+                    snapshot['created_at'],
+                    snapshot['updated_at'],
+                )
+            )
+            conn.commit()
+
+        logger.info(f"Saved snapshot {snapshot['id']} for user {snapshot['user_id']}, week {snapshot['week_of']}")
+        return snapshot['id']
+
+    def get_snapshot(self, snapshot_id: str) -> Optional[Dict]:
+        """
+        Get a snapshot by ID.
+
+        Args:
+            snapshot_id: Snapshot ID
+
+        Returns:
+            Snapshot dictionary or None if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT snapshot_json FROM meal_plan_snapshots WHERE id = ?",
+                (snapshot_id,)
+            )
+            row = cursor.fetchone()
+
+            if row:
+                return json.loads(row['snapshot_json'])
+
+        return None
+
+    def get_user_snapshots(self, user_id: int, limit: int = 10) -> List[Dict]:
+        """
+        Get recent snapshots for a user.
+
+        Args:
+            user_id: User ID
+            limit: Maximum number of snapshots to return (default: 10)
+
+        Returns:
+            List of snapshot dictionaries, ordered by created_at DESC
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                SELECT snapshot_json FROM meal_plan_snapshots
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (user_id, limit)
+            )
+            rows = cursor.fetchall()
+
+            return [json.loads(row['snapshot_json']) for row in rows]
