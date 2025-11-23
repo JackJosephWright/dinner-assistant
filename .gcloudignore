@@ -1,0 +1,50 @@
+# .gcloudignore - tells gcloud what NOT to upload
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Documentation
+docs/
+*.md
+README.md
+
+# Logs
+logs/
+*.log
+
+# Scripts and demos
+scripts/
+demo_*.py
+run.sh
+run_chatbot.sh
+
+# IMPORTANT: Do NOT ignore .db files - we need them!
+# The default .gcloudignore often excludes large files, but we need our databases
+!data/*.db
+!*.db

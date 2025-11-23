@@ -824,16 +824,17 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
             elif tool_name == "plan_meals_smart":
                 # 1. Extract/generate dates
-                num_days = tool_input.get("num_days", 7)
-
                 # Use dates from UI if available (web interface)
                 if hasattr(self, 'selected_dates') and self.selected_dates:
-                    dates = self.selected_dates[:num_days]  # Use UI-selected dates
+                    # Use UI-selected dates - this overrides num_days from LLM
+                    dates = self.selected_dates
+                    num_days = len(dates)  # Use actual count of selected dates
                     week_of = self.week_start if hasattr(self, 'week_start') else dates[0]
                     if self.verbose:
-                        self._verbose_output(f"      → Using {len(dates)} dates from UI: {dates[0]} to {dates[-1]}")
+                        self._verbose_output(f"      → Using {num_days} dates from UI: {dates[0]} to {dates[-1]}")
                 else:
                     # Fallback for CLI/non-web usage - generate dates from today
+                    num_days = tool_input.get("num_days", 7)
                     today = datetime.now().date()
                     dates = [(today + timedelta(days=i)).isoformat() for i in range(num_days)]
                     week_of = dates[0]

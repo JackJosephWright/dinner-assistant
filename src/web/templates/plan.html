@@ -1258,11 +1258,15 @@ async function replanMeals() {
             message += ` (for 7 days starting ${startDateStr})`;
         }
 
-        // Send to chat API
+        // Send to chat API with selected_dates and week_start
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: message }),
+            body: JSON.stringify({
+                message: message,
+                selected_dates: datesList,
+                week_start: formatDateForInput(new Date(currentStartDate))
+            }),
         });
 
         const result = await response.json();

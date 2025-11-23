@@ -70,9 +70,16 @@ class DatabaseInterface:
                     week_of TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     estimated_total REAL,
-                    items_json TEXT NOT NULL
+                    items_json TEXT NOT NULL,
+                    extra_items_json TEXT
                 )
             """)
+
+            # Migration: Add extra_items_json if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE grocery_lists ADD COLUMN extra_items_json TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             # User preferences table
             cursor.execute("""
@@ -80,6 +87,19 @@ class DatabaseInterface:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+            """)
+
+            # Shopping extras table (persistent user items)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shopping_extras (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    week_of TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    quantity TEXT,
+                    category TEXT,
+                    is_checked BOOLEAN DEFAULT 0,
+                    created_at TEXT NOT NULL
                 )
             """)
 
@@ -559,8 +579,8 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO grocery_lists
-                (id, week_of, created_at, estimated_total, items_json)
-                VALUES (?, ?, ?, ?, ?)
+                (id, week_of, created_at, estimated_total, items_json, extra_items_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     grocery_list.id,
@@ -568,6 +588,7 @@ class DatabaseInterface:
                     grocery_list.created_at.isoformat(),
                     grocery_list.estimated_total,
                     json.dumps([item.to_dict() for item in grocery_list.items]),
+                    json.dumps([item.to_dict() for item in grocery_list.extra_items]),
                 ),
             )
             conn.commit()
@@ -586,12 +607,17 @@ class DatabaseInterface:
 
             if row:
                 items = [GroceryItem.from_dict(i) for i in json.loads(row["items_json"])]
+                extra_items = []
+                if row["extra_items_json"]:
+                    extra_items = [GroceryItem.from_dict(i) for i in json.loads(row["extra_items_json"])]
+
                 return GroceryList(
                     id=row["id"],
                     week_of=row["week_of"],
                     created_at=datetime.fromisoformat(row["created_at"]),
                     estimated_total=row["estimated_total"],
                     items=items,
+                    extra_items=extra_items,
                 )
             return None
 
@@ -617,12 +643,17 @@ class DatabaseInterface:
 
             if row:
                 items = [GroceryItem.from_dict(i) for i in json.loads(row["items_json"])]
+                extra_items = []
+                if row["extra_items_json"]:
+                    extra_items = [GroceryItem.from_dict(i) for i in json.loads(row["extra_items_json"])]
+
                 return GroceryList(
                     id=row["id"],
                     week_of=row["week_of"],
                     created_at=datetime.fromisoformat(row["created_at"]),
                     estimated_total=row["estimated_total"],
                     items=items,
+                    extra_items=extra_items,
                 )
             return None
 
@@ -1117,3 +1148,55 @@ class DatabaseInterface:
             conn.commit()
 
         logger.info(f"Cached cooking guide for recipe {recipe_id}")
+
+    # ==================== Shopping Extras Operations ====================
+
+    def add_shopping_extra(self, week_of: str, item: GroceryItem) -> int:
+        """Add an extra item to the shopping list."""
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO shopping_extras (week_of, name, quantity, category, is_checked, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    week_of,
+                    item.name,
+                    item.quantity,
+                    item.category,
+                    False,
+                    datetime.now().isoformat()
+                )
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_shopping_extras(self, week_of: str) -> List[GroceryItem]:
+        """Get all extra items for a specific week."""
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM shopping_extras WHERE week_of = ? ORDER BY created_at",
+                (week_of,)
+            )
+            rows = cursor.fetchall()
+            
+            items = []
+            for row in rows:
+                items.append(GroceryItem(
+                    name=row["name"],
+                    quantity=row["quantity"],
+                    category=row["category"],
+                    recipe_sources=["User request"],
+                    notes="Extra item"
+                ))
+            return items
+
+    def clear_shopping_extras(self, week_of: str):
+        """Clear all extra items for a specific week."""
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM shopping_extras WHERE week_of = ?", (week_of,))
+            conn.commit()

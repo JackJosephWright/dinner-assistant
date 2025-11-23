@@ -130,6 +130,7 @@ API_KEY_AVAILABLE = bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 # Initialize chatbot for chat interface (only if API key available)
 chatbot_instance = None
+chatbot_lock = threading.Lock()  # Lock to prevent concurrent chatbot access
 if API_KEY_AVAILABLE:
     try:
         # Initialize with verbose=False to reduce log noise (focusing on shop)
@@ -924,107 +925,91 @@ def api_chat():
             actual_message = f"[SHOP MODE: User is on the shopping list page. For simple items like 'bread', 'milk', 'bananas', use add_extra_items tool, NOT recipe search or meal planning tools.] {message}"
             logger.info(f"Modified message for shop context: {actual_message}")
 
-        # Get AI response
-        response = chatbot_instance.chat(actual_message)
+        # Process chat in background thread - return immediately
+        import threading
 
-        # Save pending swap options to session
-        session['pending_swap_options'] = chatbot_instance.pending_swap_options
-        if chatbot_instance.pending_swap_options:
-            logger.info("Saved pending_swap_options to session")
+        def process_chat_in_background():
+            """Process chat asynchronously and broadcast state changes."""
+            try:
+                # Acquire lock to prevent concurrent chatbot access (serializes requests)
+                logger.info(f"[Background] Waiting for chatbot lock...")
+                with chatbot_lock:
+                    logger.info(f"[Background] Lock acquired - starting chatbot.chat() for message: {message[:50]}...")
+                    response = chatbot_instance.chat(actual_message)
+                    logger.info(f"[Background] Chatbot.chat() completed successfully")
 
-        # Update session with any IDs from chatbot
-        plan_changed = False
-        shopping_changed = False
+                    # Check for state changes (inside lock to ensure consistent state)
+                    plan_changed = False
 
-        logger.info(f"After chat - chatbot meal_plan_id: {chatbot_instance.current_meal_plan_id}, old: {old_meal_plan_id}")
+                    # Check if meal plan was created or changed
+                    if chatbot_instance.current_meal_plan_id:
+                        if chatbot_instance.current_meal_plan_id != old_meal_plan_id:
+                            plan_changed = True
+                            logger.info(f"[Background] New meal plan created: {chatbot_instance.current_meal_plan_id}")
+                        else:
+                            # Same meal plan - always assume it was modified to refresh UI
+                            plan_changed = True
+                            logger.info(f"[Background] Plan interaction detected - refreshing UI")
 
-        # Check if chatbot created or changed meal plan
-        if chatbot_instance.current_meal_plan_id:
-            session['meal_plan_id'] = chatbot_instance.current_meal_plan_id
-            # Clear the plan_cleared flag since we now have a plan
-            session.pop('plan_cleared', None)
-            if chatbot_instance.current_meal_plan_id != old_meal_plan_id:
-                # New meal plan created
-                plan_changed = True
-                logger.info(f"New meal plan created: {chatbot_instance.current_meal_plan_id}")
-            else:
-                # Same meal plan - always assume it was modified to refresh UI
-                # User can use "Clear Plan" button if they want to start fresh
-                plan_changed = True
-                logger.info(f"Plan interaction detected - refreshing UI for plan: {chatbot_instance.current_meal_plan_id}")
-
-        if chatbot_instance.current_shopping_list_id:
-            session['shopping_list_id'] = chatbot_instance.current_shopping_list_id
-            if chatbot_instance.current_shopping_list_id != old_shopping_list_id:
-                shopping_changed = True
-                logger.info(f"New shopping list created: {chatbot_instance.current_shopping_list_id}")
-            else:
-                # Same shopping list - check if user wanted to modify it
-                modification_keywords = ['double', 'triple', 'half', 'add', 'remove', 'scale']
-                if any(keyword in message.lower() for keyword in modification_keywords):
-                    shopping_changed = True
-                    logger.info(f"Detected shopping list modification request in message: '{message}'")
-                # If meal plan changed, shopping list was likely updated incrementally
-                elif plan_changed:
-                    shopping_changed = True
-                    logger.info(f"Meal plan changed - shopping list updated incrementally")
-
-        # Broadcast meal plan change immediately (don't wait for shopping list)
-        if plan_changed and chatbot_instance.current_meal_plan_id:
-            broadcast_state_change('meal_plan_changed', {
-                'meal_plan_id': chatbot_instance.current_meal_plan_id,
-            })
-            logger.info(f"Broadcasted meal_plan_changed event")
-
-        # Auto-regenerate shopping list in BACKGROUND THREAD (parallel with response)
-        if plan_changed and chatbot_instance.current_meal_plan_id and not chatbot_instance.pending_swap_options:
-            meal_plan_id = chatbot_instance.current_meal_plan_id
-
-            def regenerate_shopping_list_async():
-                """Background thread to regenerate shopping list and broadcast."""
-                try:
-                    logger.info(f"[Background] Regenerating shopping list for meal plan {meal_plan_id}")
-                    shop_result = assistant.create_shopping_list(meal_plan_id)
-
-                    if shop_result.get("success"):
-                        new_shopping_list_id = shop_result["grocery_list_id"]
-                        logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
-
-                        # Broadcast shopping list changed event
-                        broadcast_state_change('shopping_list_changed', {
-                            'shopping_list_id': new_shopping_list_id,
-                            'meal_plan_id': meal_plan_id,
+                    # Broadcast meal plan change immediately
+                    if plan_changed and chatbot_instance.current_meal_plan_id:
+                        broadcast_state_change('meal_plan_changed', {
+                            'meal_plan_id': chatbot_instance.current_meal_plan_id,
                         })
-                        logger.info(f"[Background] Broadcasted shopping_list_changed event")
-                    else:
-                        logger.warning(f"[Background] Failed to auto-generate shopping list: {shop_result.get('error')}")
-                except Exception as e:
-                    logger.error(f"[Background] Error auto-generating shopping list: {e}")
+                        logger.info(f"[Background] Broadcasted meal_plan_changed event")
 
-            # Start background thread
-            thread = threading.Thread(target=regenerate_shopping_list_async, daemon=True)
-            thread.start()
-            logger.info("Started background thread for shopping list regeneration")
+                    # Auto-regenerate shopping list in background if plan changed
+                    if plan_changed and chatbot_instance.current_meal_plan_id and not chatbot_instance.pending_swap_options:
+                        meal_plan_id = chatbot_instance.current_meal_plan_id
 
-        # If shopping list was changed synchronously (e.g., via direct shop commands), broadcast it
-        if shopping_changed and chatbot_instance.current_shopping_list_id and not plan_changed:
-            broadcast_state_change('shopping_list_changed', {
-                'shopping_list_id': chatbot_instance.current_shopping_list_id,
-                'meal_plan_id': chatbot_instance.current_meal_plan_id,
-            })
-            logger.info(f"Broadcasted shopping_list_changed event")
+                        def regenerate_shopping_list_async():
+                            """Nested background thread to regenerate shopping list."""
+                            try:
+                                logger.info(f"[Background-Shop] Regenerating shopping list for meal plan {meal_plan_id}")
+                                shop_result = assistant.create_shopping_list(meal_plan_id)
 
-        # Emit completion
-        emit_progress(session_id, "Done!", "complete")
+                                if shop_result.get("success"):
+                                    new_shopping_list_id = shop_result["grocery_list_id"]
+                                    logger.info(f"[Background-Shop] Auto-generated shopping list: {new_shopping_list_id}")
 
+                                    # Update chatbot state (with lock)
+                                    with chatbot_lock:
+                                        chatbot_instance.current_shopping_list_id = new_shopping_list_id
+
+                                    # Broadcast shopping list changed event
+                                    broadcast_state_change('shopping_list_changed', {
+                                        'shopping_list_id': new_shopping_list_id,
+                                        'meal_plan_id': meal_plan_id,
+                                    })
+                                    logger.info(f"[Background-Shop] Broadcasted shopping_list_changed event")
+                                else:
+                                    logger.warning(f"[Background-Shop] Failed to auto-generate shopping list: {shop_result.get('error')}")
+                            except Exception as e:
+                                logger.error(f"[Background-Shop] Error auto-generating shopping list: {e}")
+
+                        # Start nested background thread for shopping list (daemon=False to complete)
+                        shop_thread = threading.Thread(target=regenerate_shopping_list_async, daemon=False)
+                        shop_thread.start()
+                        logger.info("[Background] Started nested thread for shopping list regeneration")
+
+                    # Emit completion with full state
+                    emit_progress(session_id, response, "complete")
+                    logger.info("[Background] Chat processing complete")
+
+            except Exception as e:
+                logger.error(f"[Background] Error in chatbot.chat(): {e}", exc_info=True)
+                emit_progress(session_id, f"Error: {str(e)}", "error")
+
+        # Start background processing (daemon=False to survive container shutdown)
+        chat_thread = threading.Thread(target=process_chat_in_background, daemon=False)
+        chat_thread.start()
+        logger.info(f"Started background chat processing thread")
+
+        # Return immediately - don't wait for completion
         return jsonify({
             "success": True,
-            "response": response,
-            "meal_plan_id": chatbot_instance.current_meal_plan_id,
-            "shopping_list_id": chatbot_instance.current_shopping_list_id,
-            "plan_changed": plan_changed,
-            "shopping_changed": shopping_changed,
-            "awaiting_confirmation": bool(chatbot_instance.pending_swap_options),
+            "message": "Processing request...",
+            "session_id": session_id
         })
 
     except Exception as e:

@@ -9,8 +9,8 @@ import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from ...data.database import DatabaseInterface
-from ...data.models import Recipe, MealPlan, PlannedMeal, MealEvent
+from data.database import DatabaseInterface
+from data.models import Recipe, MealPlan, PlannedMeal, MealEvent
 
 logger = logging.getLogger(__name__)
 
@@ -227,16 +227,8 @@ class PlanningTools:
             # Convert meal dicts to PlannedMeal objects
             planned_meals = []
             for meal_dict in meals:
-                planned_meals.append(
-                    PlannedMeal(
-                        date=meal_dict["date"],
-                        meal_type=meal_dict.get("meal_type", "dinner"),
-                        recipe_id=meal_dict["recipe_id"],
-                        recipe_name=meal_dict["recipe_name"],
-                        servings=meal_dict.get("servings", 4),
-                        notes=meal_dict.get("notes"),
-                    )
-                )
+                # Use from_dict to handle recipe_id/recipe object compatibility
+                planned_meals.append(PlannedMeal.from_dict(meal_dict))
 
             # Create MealPlan
             meal_plan = MealPlan(

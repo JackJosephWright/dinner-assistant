@@ -28,7 +28,7 @@ Your Dinner Assistant app is now live on Google Cloud Run with the full recipe d
 - **CPU:** 2 cores
 - **Max Instances:** 10
 - **Timeout:** 300 seconds (5 minutes - both Cloud Run and gunicorn)
-- **Current Revision:** dinner-assistant-00006-8gz
+- **Current Revision:** dinner-assistant-00009-wjp
 
 ### Issues Fixed
 
@@ -37,6 +37,7 @@ Your Dinner Assistant app is now live on Google Cloud Run with the full recipe d
 3. ✅ **Database Upload:** Built Docker image locally to bypass Cloud Build's 2GB upload limit
 4. ✅ **Cloud Run Timeout:** Increased Cloud Run timeout from 120s to 300s (5 minutes)
 5. ✅ **Gunicorn Worker Timeout:** Increased gunicorn `--timeout` from 120s to 300s to match Cloud Run
+6. ✅ **503 Service Unavailable:** Converted `/api/chat` to async architecture - returns immediately (14ms) and processes in background thread
 
 ### Commands for Management
 
@@ -80,9 +81,10 @@ source .env && ./deploy.sh
 
 ### Files Modified
 
-1. `Dockerfile` - Changed CMD to use `src.web.app:app` instead of `--chdir`
+1. `Dockerfile` - Changed CMD to use `src.web.app:app` instead of `--chdir`, added `--timeout 300` for gunicorn
 2. `src/web/app.py:219,227` - Changed `jsonify()` to `json.dumps()` for SSE streaming
-3. `.docker/config.json` - Removed credHelpers to fix authentication
+3. `src/web/app.py:927-1008` - Converted `/api/chat` to async architecture with background threading
+4. `.docker/config.json` - Removed credHelpers to fix authentication
 
 ### Next Steps
 

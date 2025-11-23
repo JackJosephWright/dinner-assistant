@@ -48,6 +48,24 @@ class ShoppingTools:
             "parsley": "produce",
             "basil": "produce",
             "mushroom": "produce",
+            "fruit": "produce",
+            "apple": "produce",
+            "banana": "produce",
+            "orange": "produce",
+            "grape": "produce",
+            "berry": "produce",
+            "strawberry": "produce",
+            "blueberry": "produce",
+            "raspberry": "produce",
+            "melon": "produce",
+            "watermelon": "produce",
+            "pineapple": "produce",
+            "mango": "produce",
+            "pear": "produce",
+            "peach": "produce",
+            "plum": "produce",
+            "cherry": "produce",
+            "kiwi": "produce",
             # Meat & Seafood
             "chicken": "meat",
             "beef": "meat",
@@ -113,7 +131,13 @@ class ShoppingTools:
             all_ingredients = defaultdict(list)  # ingredient_name -> [(quantity, recipe_name)]
 
             for planned_meal in meal_plan.meals:
-                recipe = self.db.get_recipe(planned_meal.recipe_id)
+                # Use embedded recipe if available, or fetch by ID
+                recipe = planned_meal.recipe
+                if not recipe.ingredients_raw:
+                    # If recipe is minimal (e.g. from old data), fetch full details
+                    full_recipe = self.db.get_recipe(recipe.id)
+                    if full_recipe:
+                        recipe = full_recipe
                 if not recipe:
                     continue
 
@@ -127,7 +151,7 @@ class ShoppingTools:
                         "quantity": parsed["quantity"],
                         "unit": parsed["unit"],
                         "raw": ingredient_raw,
-                        "recipe": planned_meal.recipe_name,
+                        "recipe": planned_meal.recipe.name,
                     })
 
             # Consolidate similar ingredients
@@ -158,10 +182,15 @@ class ShoppingTools:
 
                 grocery_items.append(item)
 
+            # Fetch extra items from separate table
+            extra_items = self.db.get_shopping_extras(meal_plan.week_of)
+            logger.info(f"Retrieved {len(extra_items)} extra items from database")
+
             # Create grocery list
             grocery_list = GroceryList(
                 week_of=meal_plan.week_of,
                 items=grocery_items,
+                extra_items=extra_items,  # Preserve extras
             )
 
             # Save to database
@@ -324,7 +353,7 @@ class ShoppingTools:
                     "error": "Grocery list not found"
                 }
 
-            # Parse and add each item
+            # Add each item to the separate table
             added_items = []
             for item_data in items:
                 name = item_data.get("name", "").strip()
@@ -347,19 +376,31 @@ class ShoppingTools:
                     notes="Extra item (not from recipes)"
                 )
 
-                grocery_list.extra_items.append(extra_item)
+                # Save to separate table
+                self.db.add_shopping_extra(grocery_list.week_of, extra_item)
                 added_items.append(extra_item)
 
-                logger.info(f"Added extra item: {name} ({quantity}) to grocery list {grocery_list_id}")
-
-            # Save updated grocery list
+                logger.info(f"Added extra item: {name} ({quantity}) to list {grocery_list_id}")
+            
+            # Re-fetch full list to get updated extras and sections
+            # We need to update the GroceryList object in memory/DB to reflect the new state for the UI
+            # But since GroceryList is just a snapshot, we can just re-consolidate or update it
+            
+            # For now, let's just update the current grocery list object's extra_items and save it
+            # so the UI sees it immediately without full regeneration
+            # BUT wait, we want to rely on the table.
+            
+            # Better approach: Update the grocery list object by fetching extras from DB
+            all_extras = self.db.get_shopping_extras(grocery_list.week_of)
+            grocery_list.extra_items = all_extras
+            grocery_list.refresh_sections()
             self.db.save_grocery_list(grocery_list)
 
             return {
                 "success": True,
                 "grocery_list_id": grocery_list_id,
                 "added_items": [item.to_dict() for item in added_items],
-                "total_extra_items": len(grocery_list.extra_items),
+                "total_extra_items": len(all_extras),
                 "message": f"Added {len(added_items)} extra item(s) to your shopping list"
             }
 
@@ -369,6 +410,42 @@ class ShoppingTools:
                 "success": False,
                 "error": str(e)
             }
+
+    def clear_extra_items(self, grocery_list_id: str) -> Dict[str, Any]:
+        """
+        Clear all extra items from a grocery list.
+
+        Args:
+            grocery_list_id: ID of the grocery list
+
+        Returns:
+            Dictionary with success status
+        """
+        try:
+            # Get existing grocery list to find the week
+            grocery_list = self.db.get_grocery_list(grocery_list_id)
+            if not grocery_list:
+                return {"success": False, "error": "Grocery list not found"}
+
+            # Clear from DB
+            self.db.clear_shopping_extras(grocery_list.week_of)
+            
+            # Update grocery list object
+            grocery_list.extra_items = []
+            grocery_list.refresh_sections()
+            self.db.save_grocery_list(grocery_list)
+
+            logger.info(f"Cleared extra items for list {grocery_list_id}")
+
+            return {
+                "success": True,
+                "grocery_list_id": grocery_list_id,
+                "message": "Cleared all extra items"
+            }
+
+        except Exception as e:
+            logger.error(f"Error clearing extra items: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Tool definitions for MCP registration
@@ -443,6 +520,20 @@ SHOPPING_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["grocery_list_id", "items"],
+        },
+    },
+    {
+        "name": "clear_extra_items",
+        "description": "Clear all extra items from a grocery list.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "grocery_list_id": {
+                    "type": "string",
+                    "description": "ID of the grocery list",
+                },
+            },
+            "required": ["grocery_list_id"],
         },
     },
 ]

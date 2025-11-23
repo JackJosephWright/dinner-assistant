@@ -785,10 +785,23 @@ class GroceryList:
 
     def _organize_by_section(self):
         """Group items by category/store section."""
+        self.store_sections = {}
+        
+        # Add recipe items
         for item in self.items:
             if item.category not in self.store_sections:
                 self.store_sections[item.category] = []
             self.store_sections[item.category].append(item)
+            
+        # Add extra items
+        for item in self.extra_items:
+            if item.category not in self.store_sections:
+                self.store_sections[item.category] = []
+            self.store_sections[item.category].append(item)
+
+    def refresh_sections(self):
+        """Re-organize items into sections (call after modifying items)."""
+        self._organize_by_section()
 
     def add_recipe_ingredients(self, recipe: 'Recipe'):
         """

@@ -127,10 +127,11 @@ class MealPlanningAssistant:
         )
 
         if result["success"]:
-            # Print formatted list
-            formatted = self.shopping_agent.format_shopping_list(result["grocery_list_id"])
-            print("\n" + formatted)
-            print(f"\n✓ Shopping list saved: {result['grocery_list_id']}")
+            # Print formatted list only if running as CLI script (not imported)
+            if __name__ == "__main__":
+                formatted = self.shopping_agent.format_shopping_list(result["grocery_list_id"])
+                print("\n" + formatted)
+                print(f"\n✓ Shopping list saved: {result['grocery_list_id']}")
 
         return result
 

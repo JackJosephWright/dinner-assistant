@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# Documentation
+docs/
+*.md
+README.md
+
+# Logs (will be created at runtime)
+logs/
+*.log
+
+# Temporary files
+*.tmp
+.DS_Store
+*.bak
+src/*.bak
+src/web/templates/*.bak
+
+# Scripts
+scripts/
+demo_*.py
+run.sh
+run_chatbot.sh
