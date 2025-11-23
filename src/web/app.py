@@ -405,6 +405,12 @@ def logout():
     return redirect('/login')
 
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Cloud Run."""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()}), 200
+
+
 @app.route('/')
 @login_required
 def index():
