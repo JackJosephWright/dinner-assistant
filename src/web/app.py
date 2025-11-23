@@ -65,10 +65,33 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-key-change-in-production")
 CORS(app)
 
+# Feature flag for snapshot-only architecture
+SNAPSHOTS_ENABLED = os.environ.get("SNAPSHOTS_ENABLED", "true").lower() == "true"
+logger.info(f"Snapshots enabled: {SNAPSHOTS_ENABLED}")
+
+# Structured logging helpers for snapshot operations
+def log_snapshot_save(snapshot_id: str, user_id: int, week_of: str):
+    """Log snapshot save operation."""
+    logger.info(f"[SNAPSHOT] Saved: id={snapshot_id}, user={user_id}, week={week_of}")
+
+def log_snapshot_load(snapshot_id: str):
+    """Log snapshot load operation."""
+    logger.info(f"[SNAPSHOT] Loaded: id={snapshot_id}")
+
+def log_legacy_fallback(context: str):
+    """Log when legacy path is used instead of snapshot."""
+    logger.warning(f"[SNAPSHOT] Legacy fallback used: {context}")
+
 # Simple user authentication
 USERS = {
     "admin": "password",
     "agusta": "password"
+}
+
+# User ID mapping (for snapshot storage)
+USER_IDS = {
+    "admin": 1,
+    "agusta": 2
 }
 
 def login_required(f):
@@ -296,16 +319,23 @@ def restore_session_from_db():
     """
     Restore session data from database if session IDs are missing.
     This handles cases where user returns after closing browser.
+    Also updates session to latest plan if a newer one exists.
     """
     # Don't restore if user explicitly cleared the plan
     if session.get('plan_cleared'):
         return
 
-    if 'meal_plan_id' not in session:
-        # Get most recent meal plan
-        recent_plans = assistant.db.get_recent_meal_plans(limit=1)
-        if recent_plans:
-            session['meal_plan_id'] = recent_plans[0].id
+    # Always get the most recent meal plan and update session if newer
+    recent_plans = assistant.db.get_recent_meal_plans(limit=1)
+    if recent_plans:
+        latest_plan_id = recent_plans[0].id
+        current_session_plan_id = session.get('meal_plan_id')
+
+        if current_session_plan_id != latest_plan_id:
+            session['meal_plan_id'] = latest_plan_id
+            logger.info(f"Updated session to latest meal plan: {latest_plan_id} (was: {current_session_plan_id})")
+        elif 'meal_plan_id' not in session:
+            session['meal_plan_id'] = latest_plan_id
             logger.info(f"Restored meal_plan_id from database: {session['meal_plan_id']}")
 
             # Also try to restore shopping list for this plan
@@ -334,7 +364,8 @@ def login():
 
         if username in USERS and USERS[username] == password:
             session['username'] = username
-            logger.info(f"User {username} logged in successfully")
+            session['user_id'] = USER_IDS.get(username, 1)  # Default to 1 if not in mapping
+            logger.info(f"User {username} (ID: {session['user_id']}) logged in successfully")
             from flask import redirect
             return redirect('/plan')
         else:
@@ -378,9 +409,64 @@ def plan_page():
 
     # Get current meal plan if exists
     current_plan = None
-    if 'meal_plan_id' in session:
+
+    # Phase 5: Try loading from snapshot first
+    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
         try:
-            meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
+            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            if snapshot and snapshot.get('planned_meals'):
+                log_snapshot_load(session['snapshot_id'])
+
+                # Transform snapshot data to frontend format
+                enriched_meals = []
+                for meal_dict in snapshot['planned_meals']:
+                    # Flatten recipe fields for frontend compatibility
+                    if 'recipe' in meal_dict and meal_dict['recipe']:
+                        recipe = meal_dict['recipe']
+                        meal_dict['recipe_id'] = recipe.get('id')
+                        meal_dict['recipe_name'] = recipe.get('name')
+                        meal_dict['description'] = recipe.get('description')
+                        meal_dict['estimated_time'] = recipe.get('estimated_time')
+                        meal_dict['cuisine'] = recipe.get('cuisine')
+                        meal_dict['difficulty'] = recipe.get('difficulty')
+
+                    # Format date nicely (e.g., "Friday, November 1")
+                    date_str = meal_dict.get('date')
+                    if date_str:
+                        from datetime import datetime
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                        meal_dict['meal_date'] = date_obj.strftime('%A, %B %d')
+                    else:
+                        meal_dict['meal_date'] = date_str
+                    enriched_meals.append(meal_dict)
+
+                current_plan = {
+                    'id': snapshot['id'],
+                    'week_of': snapshot['week_of'],
+                    'meals': enriched_meals,
+                }
+        except Exception as e:
+            logger.error(f"Error loading meal plan from snapshot: {e}")
+            log_legacy_fallback("plan_page - snapshot load failed")
+
+    # Fallback to legacy path if snapshot not available
+    if current_plan is None:
+        try:
+            # Try chatbot's current plan first (most recent)
+            meal_plan_id = None
+            if chatbot_instance and chatbot_instance.current_meal_plan_id:
+                meal_plan_id = chatbot_instance.current_meal_plan_id
+                logger.info(f"[/plan] Using chatbot's current plan: {meal_plan_id}")
+            elif 'meal_plan_id' in session:
+                meal_plan_id = session['meal_plan_id']
+                logger.info(f"[/plan] Using session plan: {meal_plan_id}")
+
+            if not meal_plan_id:
+                log_legacy_fallback("plan_page - no snapshot available, no session plan")
+                meal_plan = None
+            else:
+                log_legacy_fallback("plan_page - no snapshot available")
+                meal_plan = assistant.db.get_meal_plan(meal_plan_id)
             if meal_plan:
                 # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
                 enriched_meals = []
@@ -427,42 +513,60 @@ def shop_page():
     # Restore session from DB if needed
     restore_session_from_db()
 
-    # Get current shopping list if exists
-    # IMPORTANT: Always fetch LATEST shopping list for current meal plan
-    # (background thread may have regenerated it without updating session)
+    # Phase 3: Try snapshot first, fallback to legacy
     current_list = None
-    if 'meal_plan_id' in session:
-        try:
-            meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
-            if meal_plan:
-                # Query for most recent grocery list for this week
-                with sqlite3.connect(assistant.db.user_db) as conn:
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT id FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
-                        (meal_plan.week_of,)
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        latest_shopping_list_id = row['id']
-                        # Update session with latest ID
-                        session['shopping_list_id'] = latest_shopping_list_id
-                        logger.info(f"Loaded latest shopping list: {latest_shopping_list_id}")
 
-                        grocery_list = assistant.db.get_grocery_list(latest_shopping_list_id)
-                        if grocery_list:
-                            current_list = grocery_list.to_dict()
-        except Exception as e:
-            logger.error(f"Error loading shopping list: {e}")
-    elif 'shopping_list_id' in session:
-        # Fallback: use session ID if no meal plan
+    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
         try:
-            grocery_list = assistant.db.get_grocery_list(session['shopping_list_id'])
-            if grocery_list:
-                current_list = grocery_list.to_dict()
+            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            if snapshot and snapshot.get('grocery_list'):
+                current_list = snapshot['grocery_list']
+                log_snapshot_load(session['snapshot_id'])
+                logger.info(f"Phase 3: Shop tab loaded from snapshot {session['snapshot_id']}")
+            elif snapshot and not snapshot.get('grocery_list'):
+                logger.info(f"Phase 3: Snapshot exists but grocery_list is None, using legacy fallback")
+                log_legacy_fallback("shop - grocery_list not yet generated")
         except Exception as e:
-            logger.error(f"Error loading shopping list: {e}")
+            logger.error(f"Phase 3: Error loading snapshot: {e}", exc_info=True)
+            log_legacy_fallback("shop - snapshot error")
+
+    # Fallback to legacy if snapshot not available
+    if current_list is None:
+        if not SNAPSHOTS_ENABLED:
+            log_legacy_fallback("shop - snapshots disabled")
+
+        if 'meal_plan_id' in session:
+            try:
+                meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
+                if meal_plan:
+                    # Query for most recent grocery list for this week
+                    with sqlite3.connect(assistant.db.user_db) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT id FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
+                            (meal_plan.week_of,)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            latest_shopping_list_id = row['id']
+                            # Update session with latest ID
+                            session['shopping_list_id'] = latest_shopping_list_id
+                            logger.info(f"Legacy: Loaded latest shopping list: {latest_shopping_list_id}")
+
+                            grocery_list = assistant.db.get_grocery_list(latest_shopping_list_id)
+                            if grocery_list:
+                                current_list = grocery_list.to_dict()
+            except Exception as e:
+                logger.error(f"Error loading shopping list: {e}")
+        elif 'shopping_list_id' in session:
+            # Fallback: use session ID if no meal plan
+            try:
+                grocery_list = assistant.db.get_grocery_list(session['shopping_list_id'])
+                if grocery_list:
+                    current_list = grocery_list.to_dict()
+            except Exception as e:
+                logger.error(f"Error loading shopping list: {e}")
 
     return render_template(
         'shop.html',
@@ -481,8 +585,50 @@ def cook_page():
 
     # Get current meal plan if exists
     current_plan = None
-    if 'meal_plan_id' in session:
+
+    # Phase 5: Try loading from snapshot first
+    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
         try:
+            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            if snapshot and snapshot.get('planned_meals'):
+                log_snapshot_load(session['snapshot_id'])
+
+                # Transform snapshot data to frontend format
+                enriched_meals = []
+                for meal_dict in snapshot['planned_meals']:
+                    # Flatten recipe fields for frontend compatibility
+                    if 'recipe' in meal_dict and meal_dict['recipe']:
+                        recipe = meal_dict['recipe']
+                        meal_dict['recipe_id'] = recipe.get('id')
+                        meal_dict['recipe_name'] = recipe.get('name')
+                        meal_dict['description'] = recipe.get('description')
+                        meal_dict['estimated_time'] = recipe.get('estimated_time')
+                        meal_dict['cuisine'] = recipe.get('cuisine')
+                        meal_dict['difficulty'] = recipe.get('difficulty')
+
+                    # Format date nicely (e.g., "Friday, November 1")
+                    date_str = meal_dict.get('date')
+                    if date_str:
+                        from datetime import datetime
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                        meal_dict['meal_date'] = date_obj.strftime('%A, %B %d')
+                    else:
+                        meal_dict['meal_date'] = date_str
+                    enriched_meals.append(meal_dict)
+
+                current_plan = {
+                    'id': snapshot['id'],
+                    'week_of': snapshot['week_of'],
+                    'meals': enriched_meals,
+                }
+        except Exception as e:
+            logger.error(f"Error loading meal plan from snapshot for cook page: {e}")
+            log_legacy_fallback("cook_page - snapshot load failed")
+
+    # Fallback to legacy path if snapshot not available
+    if current_plan is None and 'meal_plan_id' in session:
+        try:
+            log_legacy_fallback("cook_page - no snapshot available")
             meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
             if meal_plan:
                 # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
@@ -577,6 +723,36 @@ def api_plan_meals():
             # Store meal plan ID in session
             session['meal_plan_id'] = result['meal_plan_id']
 
+            # Phase 2: Dual-write to snapshots (legacy tables still drive UI)
+            if SNAPSHOTS_ENABLED:
+                try:
+                    # Load the MealPlan from database
+                    meal_plan = assistant.db.get_meal_plan(result['meal_plan_id'])
+                    if meal_plan:
+                        user_id = session.get('user_id', 1)
+
+                        # Build snapshot dict from MealPlan
+                        snapshot = {
+                            'id': meal_plan.id,
+                            'user_id': user_id,
+                            'week_of': meal_plan.week_of,
+                            'created_at': meal_plan.created_at.isoformat(),
+                            'version': 1,
+                            'planned_meals': [meal.to_dict() for meal in meal_plan.meals],
+                            'grocery_list': None,  # Will be filled by background thread
+                        }
+
+                        # Save snapshot
+                        snapshot_id = assistant.db.save_snapshot(snapshot)
+                        session['snapshot_id'] = snapshot_id
+                        log_snapshot_save(snapshot_id, user_id, meal_plan.week_of)
+                        logger.info(f"Phase 2: Dual-wrote snapshot {snapshot_id} for meal plan {result['meal_plan_id']}")
+                    else:
+                        logger.warning(f"Phase 2: Could not load meal plan {result['meal_plan_id']} for snapshot")
+                except Exception as e:
+                    logger.error(f"Phase 2: Error creating snapshot: {e}", exc_info=True)
+                    # Don't fail the request if snapshot creation fails
+
             # Broadcast state change to all tabs
             broadcast_state_change('meal_plan_changed', {
                 'meal_plan_id': result['meal_plan_id'],
@@ -588,25 +764,40 @@ def api_plan_meals():
             def regenerate_shopping_list_async():
                 """Background thread to auto-generate shopping list for new plan."""
                 try:
-                    logger.info(f"[Background] Auto-generating shopping list for new plan {result['meal_plan_id']}")
-                    shop_result = assistant.create_shopping_list(result['meal_plan_id'])
+                    meal_plan_id = result['meal_plan_id']
+                    logger.info(f"[Background] Auto-generating shopping list for plan {meal_plan_id}")
+
+                    # Phase 4: Update snapshot after shopping list generation
+                    # Run shopping agent (still writes to legacy grocery_lists table for now)
+                    shop_result = assistant.create_shopping_list(meal_plan_id)
 
                     if shop_result.get("success"):
                         new_shopping_list_id = shop_result["grocery_list_id"]
                         logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
 
-                        # Update session with new shopping list ID
-                        # Note: session updates in background thread require app context
-                        with app.app_context():
-                            from flask import session as bg_session
-                            # Can't modify session from background thread reliably
-                            # Will be updated when user visits Shop tab
-                            pass
+                        # Phase 4: Also update snapshot if enabled
+                        if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+                            try:
+                                snapshot_id = session['snapshot_id']
+                                snapshot = assistant.db.get_snapshot(snapshot_id)
+
+                                if snapshot:
+                                    # Load the grocery list and add to snapshot
+                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                    if grocery_list:
+                                        snapshot['grocery_list'] = grocery_list.to_dict()
+                                        snapshot['updated_at'] = datetime.now().isoformat()
+                                        assistant.db.save_snapshot(snapshot)
+                                        logger.info(f"[Background] Phase 4: Updated snapshot {snapshot_id} with grocery list")
+                                else:
+                                    logger.warning(f"[Background] Snapshot not found: {snapshot_id}")
+                            except Exception as e:
+                                logger.error(f"[Background] Error updating snapshot with grocery list: {e}", exc_info=True)
 
                         # Broadcast shopping list change to all tabs
                         broadcast_state_change('shopping_list_changed', {
                             'shopping_list_id': new_shopping_list_id,
-                            'meal_plan_id': result['meal_plan_id']
+                            'meal_plan_id': meal_plan_id
                         })
                         logger.info(f"[Background] Broadcasted shopping_list_changed event")
                     else:
@@ -652,12 +843,34 @@ def api_swap_meal():
         )
 
         if result.get("success"):
+            # Phase 6: Update snapshot after swap
+            if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+                try:
+                    snapshot_id = session['snapshot_id']
+                    snapshot = assistant.db.get_snapshot(snapshot_id)
+
+                    if snapshot:
+                        # Load updated meal plan from legacy table
+                        meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+                        if meal_plan:
+                            # Update snapshot's planned_meals with new meal data
+                            snapshot['planned_meals'] = [m.to_dict() for m in meal_plan.meals]
+                            assistant.db.save_snapshot(snapshot)
+                            log_snapshot_save(snapshot_id, snapshot['user_id'], snapshot['week_of'])
+                            logger.info(f"[Phase 6] Updated snapshot after meal swap: {data['date']}")
+                except Exception as e:
+                    logger.error(f"[Phase 6] Failed to update snapshot after swap: {e}")
+                    log_legacy_fallback("swap_meal - snapshot update failed")
+
             # Broadcast meal plan change immediately
             broadcast_state_change('meal_plan_changed', {
                 'meal_plan_id': meal_plan_id,
                 'date_changed': data['date']
             })
             logger.info(f"Broadcasted meal_plan_changed event")
+
+            # Capture snapshot_id for background thread
+            snapshot_id_for_bg = session.get('snapshot_id') if SNAPSHOTS_ENABLED else None
 
             # Auto-regenerate shopping list in BACKGROUND THREAD
             def regenerate_shopping_list_async():
@@ -669,6 +882,21 @@ def api_swap_meal():
                     if shop_result.get("success"):
                         new_shopping_list_id = shop_result["grocery_list_id"]
                         logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
+
+                        # Phase 6: Update snapshot with new grocery list
+                        if SNAPSHOTS_ENABLED and snapshot_id_for_bg:
+                            try:
+                                snapshot = assistant.db.get_snapshot(snapshot_id_for_bg)
+                                if snapshot:
+                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                    if grocery_list:
+                                        snapshot['grocery_list'] = grocery_list.to_dict()
+                                        snapshot['updated_at'] = datetime.now().isoformat()
+                                        assistant.db.save_snapshot(snapshot)
+                                        log_snapshot_save(snapshot_id_for_bg, snapshot['user_id'], snapshot['week_of'])
+                                        logger.info(f"[Background][Phase 6] Updated snapshot grocery list")
+                            except Exception as e:
+                                logger.error(f"[Background][Phase 6] Failed to update snapshot grocery list: {e}")
 
                         # Broadcast shopping list changed event
                         broadcast_state_change('shopping_list_changed', {
@@ -887,14 +1115,17 @@ def api_chat():
             logger.info(f"Week start from UI: {week_start}")
 
         # Store old IDs to detect changes
-        old_meal_plan_id = session.get('meal_plan_id')
-        old_shopping_list_id = session.get('shopping_list_id')
+        old_meal_plan_id = chatbot_instance.current_meal_plan_id or session.get('meal_plan_id')
+        old_shopping_list_id = chatbot_instance.current_shopping_list_id or session.get('shopping_list_id')
 
-        # Restore IDs from session to chatbot to ensure state persistence
-        if old_meal_plan_id:
-            chatbot_instance.current_meal_plan_id = old_meal_plan_id
-        if old_shopping_list_id:
-            chatbot_instance.current_shopping_list_id = old_shopping_list_id
+        # Restore IDs from session to chatbot ONLY if chatbot doesn't have them
+        # (Don't overwrite chatbot's current state with stale session data)
+        if not chatbot_instance.current_meal_plan_id and session.get('meal_plan_id'):
+            chatbot_instance.current_meal_plan_id = session.get('meal_plan_id')
+            logger.info(f"Restored meal_plan_id from session: {session.get('meal_plan_id')}")
+        if not chatbot_instance.current_shopping_list_id and session.get('shopping_list_id'):
+            chatbot_instance.current_shopping_list_id = session.get('shopping_list_id')
+            logger.info(f"Restored shopping_list_id from session: {session.get('shopping_list_id')}")
 
         # Pass selected dates to chatbot for meal planning
         if selected_dates:
@@ -928,6 +1159,10 @@ def api_chat():
         # Process chat in background thread - return immediately
         import threading
 
+        # Capture session data for background thread (session not accessible in thread)
+        snapshot_id_for_bg = session.get('snapshot_id') if SNAPSHOTS_ENABLED else None
+        user_id_for_bg = session.get('user_id', 1)
+
         def process_chat_in_background():
             """Process chat asynchronously and broadcast state changes."""
             try:
@@ -950,6 +1185,29 @@ def api_chat():
                             # Same meal plan - always assume it was modified to refresh UI
                             plan_changed = True
                             logger.info(f"[Background] Plan interaction detected - refreshing UI")
+
+                    # Phase 2: Create snapshot for chat-generated meal plans
+                    if plan_changed and chatbot_instance.current_meal_plan_id and SNAPSHOTS_ENABLED:
+                        try:
+                            meal_plan = assistant.db.get_meal_plan(chatbot_instance.current_meal_plan_id)
+                            if meal_plan:
+                                snapshot = {
+                                    'id': meal_plan.id,
+                                    'user_id': user_id_for_bg,  # Use captured variable
+                                    'week_of': meal_plan.week_of,
+                                    'created_at': meal_plan.created_at.isoformat(),
+                                    'version': 1,
+                                    'planned_meals': [m.to_dict() for m in meal_plan.meals],
+                                    'grocery_list': None,
+                                }
+                                new_snapshot_id = assistant.db.save_snapshot(snapshot)
+                                # Update captured variable for nested thread
+                                nonlocal snapshot_id_for_bg
+                                snapshot_id_for_bg = new_snapshot_id
+                                log_snapshot_save(new_snapshot_id, user_id_for_bg, meal_plan.week_of)
+                                logger.info(f"[Background][Phase 2] Created snapshot {new_snapshot_id} for chat-generated plan")
+                        except Exception as e:
+                            logger.error(f"[Background][Phase 2] Failed to create snapshot: {e}", exc_info=True)
 
                     # Broadcast meal plan change immediately
                     if plan_changed and chatbot_instance.current_meal_plan_id:
@@ -975,6 +1233,21 @@ def api_chat():
                                     # Update chatbot state (with lock)
                                     with chatbot_lock:
                                         chatbot_instance.current_shopping_list_id = new_shopping_list_id
+
+                                    # Phase 4: Update snapshot with grocery list
+                                    if SNAPSHOTS_ENABLED and snapshot_id_for_bg:
+                                        try:
+                                            snapshot = assistant.db.get_snapshot(snapshot_id_for_bg)
+                                            if snapshot:
+                                                grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                                if grocery_list:
+                                                    snapshot['grocery_list'] = grocery_list.to_dict()
+                                                    snapshot['updated_at'] = datetime.now().isoformat()
+                                                    assistant.db.save_snapshot(snapshot)
+                                                    log_snapshot_save(snapshot_id_for_bg, snapshot['user_id'], snapshot['week_of'])
+                                                    logger.info(f"[Background-Shop][Phase 4] Updated snapshot {snapshot_id_for_bg} with grocery list")
+                                        except Exception as e:
+                                            logger.error(f"[Background-Shop][Phase 4] Failed to update snapshot: {e}", exc_info=True)
 
                                     # Broadcast shopping list changed event
                                     broadcast_state_change('shopping_list_changed', {
@@ -1139,7 +1412,20 @@ def api_preferences_reset():
 def api_get_current_plan():
     """Get current meal plan with enriched data."""
     try:
-        meal_plan_id = session.get('meal_plan_id')
+        # Check chatbot's current plan first (source of truth), then fall back to session
+        meal_plan_id = None
+        if chatbot_instance and chatbot_instance.current_meal_plan_id:
+            meal_plan_id = chatbot_instance.current_meal_plan_id
+            # Update session to stay in sync
+            if meal_plan_id != session.get('meal_plan_id'):
+                session['meal_plan_id'] = meal_plan_id
+                logger.info(f"[/api/plan/current] Using chatbot's current plan: {meal_plan_id}")
+
+        # Fall back to session if chatbot doesn't have a plan
+        if not meal_plan_id:
+            meal_plan_id = session.get('meal_plan_id')
+            logger.info(f"[/api/plan/current] Using session plan: {meal_plan_id}")
+
         if not meal_plan_id:
             return jsonify({"success": False, "error": "No active meal plan"}), 404
 
@@ -1330,6 +1616,19 @@ def api_reset_performance_metrics():
     except Exception as e:
         logger.error(f"Error resetting performance metrics: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/debug/snapshot-log-test')
+def debug_snapshot_log():
+    """Test route to verify snapshot logging works."""
+    log_snapshot_save("test_mp_2025-11-24_20251123", 1, "2025-11-24")
+    log_snapshot_load("test_mp_2025-11-24_20251123")
+    log_legacy_fallback("debug route test")
+    return jsonify({
+        "status": "ok",
+        "message": "Check logs for [SNAPSHOT] entries",
+        "snapshots_enabled": SNAPSHOTS_ENABLED
+    })
 
 
 if __name__ == '__main__':

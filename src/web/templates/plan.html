@@ -847,8 +847,10 @@ function startProgressStream() {
             // Update typing indicator with progress message
             updateTypingMessage(data.message);
         } else if (data.status === 'complete') {
-            // Progress complete - will be removed when response arrives
-            console.log('Progress complete');
+            // Show the assistant's response
+            removeTypingIndicator();
+            addAssistantMessage(data.message);
+            console.log('Chat complete');
         } else if (data.status === 'error') {
             // Show error
             removeTypingIndicator();
@@ -954,70 +956,21 @@ document.getElementById('chatForm').addEventListener('submit', async (e) => {
 
         const result = await response.json();
 
-        // Close progress stream
-        if (progressEventSource) {
-            progressEventSource.close();
-            progressEventSource = null;
-        }
-
-        // Remove typing indicator
-        removeTypingIndicator();
+        // Don't close progress stream - let it receive the 'complete' event
+        // Don't remove typing indicator - progress stream handler will do it
+        // Just confirm the request was accepted
 
         if (result.success) {
-            // Add assistant response
-            addAssistantMessage(result.response);
-
-            // DEBUG: Log the full result
-            console.log('Chat result:', result);
-            console.log('plan_changed:', result.plan_changed);
-
-            // Check if meal plan or shopping list changed
-            if (result.plan_changed) {
-                console.log('🔄 Plan changed, updating display...');
-
-                // Show updating message
-                addAssistantMessage('🔄 Updating your meal plan...', false);
-
-                // Fetch updated meal plan and update DOM
-                await updateMealPlanDisplay();
-
-                // ⚡ OPTIMIZATION: Auto-trigger background preload after plan creation
-                // This prepares Shop & Cook data while user reviews the plan
-                console.log('⚡ Starting background preload of Shop & Cook data...');
-                console.log('⏰ Waiting 2 seconds before triggering preload...');
-                setTimeout(() => {
-                    console.log('🚀 Triggering /api/plan/preload now...');
-                    fetch('/api/plan/preload', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' }
-                    })
-                        .then(res => {
-                            console.log('📡 Preload response status:', res.status);
-                            return res.json();
-                        })
-                        .then(data => {
-                            console.log('📦 Preload data:', data);
-                            if (data.success) {
-                                console.log('✅ Background preload complete!', data);
-                                // Show subtle notification
-                                const toast = document.createElement('div');
-                                toast.className = 'fixed bottom-4 right-4 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50 text-sm';
-                                toast.innerHTML = `<i class="fas fa-check-circle mr-2"></i> Shop & Cook tabs ready! (${data.recipes_preloaded || 0} recipes loaded)`;
-                                document.body.appendChild(toast);
-                                setTimeout(() => toast.remove(), 5000);
-                            } else {
-                                console.error('❌ Preload failed:', data.error);
-                            }
-                        })
-                        .catch(err => {
-                            console.error('💥 Background preload failed:', err);
-                            console.error('Error details:', err.message, err.stack);
-                        });
-                }, 2000); // Wait 2 seconds to let user start reading
-            } else {
-                console.log('Chat successful, no data changes detected');
-            }
+            console.log('Chat request accepted, waiting for SSE completion...');
+            // Response will come via progressEventSource (status: 'complete')
+            // Meal plan updates will come via stateEventSource (type: 'meal_plan_changed')
         } else {
+            // Only handle immediate errors (like missing API key)
+            if (progressEventSource) {
+                progressEventSource.close();
+                progressEventSource = null;
+            }
+            removeTypingIndicator();
             addAssistantMessage('Sorry, I encountered an error: ' + result.error);
         }
     } catch (error) {
