@@ -51,6 +51,7 @@ gcloud run deploy $SERVICE_NAME \
   --cpu 2 \
   --timeout 300 \
   --max-instances 10 \
+  --min-instances 1 \
   --set-env-vars "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-YOUR_API_KEY_HERE}" \
   --set-env-vars "FLASK_SECRET_KEY=$(openssl rand -hex 32)"
 

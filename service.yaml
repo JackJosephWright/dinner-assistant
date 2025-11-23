@@ -1,0 +1,42 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: dinner-assistant
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: '1'
+        autoscaling.knative.dev/maxScale: '10'
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+      - image: gcr.io/dinner-assistant-479014/dinner-assistant
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            memory: 4Gi
+            cpu: '2'
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 0
+          timeoutSeconds: 1
+          periodSeconds: 3
+          failureThreshold: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 0
+          timeoutSeconds: 1
+          periodSeconds: 10
+          failureThreshold: 3
+        env:
+        - name: ANTHROPIC_API_KEY
+          value: "${ANTHROPIC_API_KEY}"
+        - name: FLASK_SECRET_KEY
+          value: "${FLASK_SECRET_KEY}"
