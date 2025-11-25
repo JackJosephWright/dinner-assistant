@@ -1649,6 +1649,43 @@ def api_get_current_plan():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/plan/<meal_plan_id>', methods=['GET'])
+@login_required
+def api_get_plan_by_id(meal_plan_id):
+    """Get meal plan by ID (for cook page and localStorage-based lookups)."""
+    try:
+        meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+        if not meal_plan:
+            return jsonify({"success": False, "error": "Meal plan not found"}), 404
+
+        # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
+        enriched_meals = []
+        for meal in meal_plan.meals:
+            meal_dict = meal.to_dict()
+            if meal.recipe:
+                meal_dict['recipe_id'] = meal.recipe.id
+                meal_dict['recipe_name'] = meal.recipe.name
+                meal_dict['description'] = meal.recipe.description
+                meal_dict['estimated_time'] = meal.recipe.estimated_time
+                meal_dict['cuisine'] = meal.recipe.cuisine
+                meal_dict['difficulty'] = meal.recipe.difficulty
+            meal_dict['meal_date'] = meal_dict.pop('date', None)
+            enriched_meals.append(meal_dict)
+
+        return jsonify({
+            "success": True,
+            "plan": {
+                'id': meal_plan.id,
+                'week_of': meal_plan.week_of,
+                'meals': enriched_meals,
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting plan by ID: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/plan/preload', methods=['POST'])
 @login_required
 def api_preload_plan_data():
