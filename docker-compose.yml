@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Redis for pub/sub messaging
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # FastAPI application (optional - can also run directly)
+  api:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 5000 --reload
+
+volumes:
+  redis_data:
