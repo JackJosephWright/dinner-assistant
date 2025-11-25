@@ -105,6 +105,11 @@ async def create_plan(
             num_days=plan_request.num_days
         )
 
+        # Store meal plan ID in session state
+        if result.get("success") and result.get("meal_plan_id"):
+            state = get_session_state(session_id)
+            state["meal_plan_id"] = result["meal_plan_id"]
+
         return CreatePlanResponse(**result)
 
     except Exception as e:
@@ -202,4 +207,107 @@ async def search_recipes(
 
     except Exception as e:
         logger.exception(f"Error searching recipes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Session-based state (in production, use Redis or database)
+# This is a simple in-memory store for demo purposes
+_session_state: dict = {}
+
+
+def get_session_state(session_id: str) -> dict:
+    """Get or create session state."""
+    if session_id not in _session_state:
+        _session_state[session_id] = {}
+    return _session_state[session_id]
+
+
+@router.get("/plan/current", response_model=PlanResponse)
+async def get_current_plan(
+    request: Request,
+    session_id: str = "default",
+    service: AsyncPlanService = Depends(get_service)
+):
+    """
+    Get the current meal plan for the session.
+
+    This endpoint is used by the frontend to fetch the active meal plan.
+    """
+    try:
+        state = get_session_state(session_id)
+        meal_plan_id = state.get("meal_plan_id")
+
+        if not meal_plan_id:
+            return PlanResponse(success=False, error="No active meal plan")
+
+        plan = await service.get_current_plan(meal_plan_id)
+
+        if plan is None:
+            return PlanResponse(success=False, error="Meal plan not found")
+
+        return PlanResponse(success=True, plan=plan)
+
+    except Exception as e:
+        logger.exception(f"Error getting current plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/plan/preload")
+async def preload_plan_data(
+    request: Request,
+    session_id: str = "default",
+    service: AsyncPlanService = Depends(get_service)
+):
+    """
+    Preload shopping list and cook page data for current meal plan.
+
+    This triggers background generation of shopping lists.
+    """
+    try:
+        state = get_session_state(session_id)
+        meal_plan_id = state.get("meal_plan_id")
+
+        if not meal_plan_id:
+            raise HTTPException(status_code=400, detail="No active meal plan")
+
+        # Trigger shopping list generation in background
+        import asyncio
+        asyncio.create_task(
+            service._generate_shopping_list_background(session_id, meal_plan_id)
+        )
+
+        return {
+            "success": True,
+            "message": "Background preloading started",
+            "meal_plan_id": meal_plan_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error preloading data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/plan/clear")
+async def clear_plan(
+    request: Request,
+    session_id: str = "default"
+):
+    """
+    Clear the current meal plan from the session.
+    """
+    try:
+        state = get_session_state(session_id)
+        old_plan_id = state.pop("meal_plan_id", None)
+        state.pop("shopping_list_id", None)
+
+        return {
+            "success": True,
+            "message": "Session cleared",
+            "cleared_plan_id": old_plan_id
+        }
+
+    except Exception as e:
+        logger.exception(f"Error clearing plan: {e}")
         raise HTTPException(status_code=500, detail=str(e))

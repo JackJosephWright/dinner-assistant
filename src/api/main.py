@@ -219,15 +219,25 @@ async def state_stream(request: Request, tab_id: str = None):
 
 
 # Import and include route modules
-from .routes import chat, plan, shop, cook
+from .routes import chat, plan, shop, cook, pages
 from .services.chat_service import init_chat_service
 from .services.plan_service import init_plan_service
 
-# Include all routers
+# Include API routers
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(plan.router, prefix="/api", tags=["planning"])
 app.include_router(shop.router, prefix="/api", tags=["shopping"])
 app.include_router(cook.router, prefix="/api", tags=["cooking"])
+
+# Include page routes (HTML templates)
+app.include_router(pages.router, tags=["pages"])
+
+# Mount static files
+from fastapi.staticfiles import StaticFiles
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(__file__), '..', 'web', 'static')
+if _os.path.exists(_static_dir):
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
 
 if __name__ == "__main__":
