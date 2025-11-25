@@ -128,6 +128,45 @@ async def create_shopping_list(
             raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/shop/current")
+async def get_current_shopping_list(
+    meal_plan_id: str,
+    service: AsyncPlanService = Depends(get_service)
+):
+    """
+    Get the current shopping list for a meal plan.
+
+    Args:
+        meal_plan_id: The meal plan ID to get shopping list for
+
+    Returns:
+        Shopping list with items organized by category
+    """
+    try:
+        assistant = await service._get_assistant()
+        loop = asyncio.get_event_loop()
+
+        from concurrent.futures import ThreadPoolExecutor
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        grocery_list = await loop.run_in_executor(
+            executor,
+            lambda: assistant.db.get_grocery_list_by_meal_plan(meal_plan_id)
+        )
+
+        if not grocery_list:
+            return {"success": False, "error": "No shopping list found for this meal plan"}
+
+        return {
+            "success": True,
+            "grocery_list": grocery_list.to_dict()
+        }
+
+    except Exception as e:
+        logger.exception(f"Error getting current shopping list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/shop/{grocery_list_id}")
 async def get_shopping_list(
     grocery_list_id: str,

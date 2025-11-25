@@ -17,17 +17,17 @@
         </p>
     </div>
 
-    {% if current_plan %}
-    <!-- This Week's Meals Section -->
-    <div class="bg-gradient-to-r from-orange-50 to-red-50 rounded-lg shadow-lg p-6 mb-6">
+    <!-- This Week's Meals Section (always rendered, JS populates client-side) -->
+    <div id="mealPlanSection" class="bg-gradient-to-r from-orange-50 to-red-50 rounded-lg shadow-lg p-6 mb-6 {{ '' if current_plan else 'hidden' }}">
         <div class="flex items-center justify-between mb-4">
             <h2 class="text-2xl font-bold text-gray-900">
                 <i class="fas fa-calendar-week text-orange-600"></i> This Week's Meals
             </h2>
-            <span class="text-sm text-gray-600">{{ current_plan.meals|length }} recipes</span>
+            <span id="mealCountBadge" class="text-sm text-gray-600">{{ current_plan.meals|length if current_plan else '0' }} recipes</span>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="mealCardsGrid">
+            {% if current_plan %}
             {% for meal in current_plan.meals %}
             <div onclick="loadRecipe('{{ meal.recipe_id }}')"
                  class="bg-white rounded-lg shadow hover:shadow-xl transition-shadow cursor-pointer p-4 border-2 border-transparent hover:border-orange-400">
@@ -51,9 +51,9 @@
                 </div>
             </div>
             {% endfor %}
+            {% endif %}
         </div>
     </div>
-    {% endif %}
 
     <!-- Recipe Display and Search -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -438,9 +438,17 @@ async function updateMealDisplay() {
     /**
      * Update meal cards dynamically without page reload (like Plan tab).
      * Fetches latest MealPlan and updates embedded recipes + meal cards.
+     * Uses meal_plan_id from localStorage (like Shop page).
      */
+    const mealPlanId = localStorage.getItem('currentMealPlanId');
+    if (!mealPlanId) {
+        console.log('No meal plan ID in localStorage, cannot load meals');
+        return;
+    }
+
     try {
-        const response = await fetch('/api/plan/current');
+        console.log('Loading meal plan:', mealPlanId);
+        const response = await fetch(`/api/plan/${mealPlanId}`);
         const result = await response.json();
 
         if (result.success && result.plan) {
@@ -477,8 +485,14 @@ async function updateMealDisplay() {
                 `).join('');
             }
 
+            // Show the meal plan section (remove hidden class)
+            const section = document.getElementById('mealPlanSection');
+            if (section) {
+                section.classList.remove('hidden');
+            }
+
             // Update recipe count
-            const countElement = document.querySelector('.text-sm.text-gray-600');
+            const countElement = document.getElementById('mealCountBadge');
             if (countElement) {
                 countElement.textContent = `${result.plan.meals.length} recipes`;
             }
@@ -624,7 +638,8 @@ loadRecipe = async function(recipeId) {
     await originalLoadRecipe(recipeId);
 };
 
-// Start SSE listener when page loads
+// Start SSE listener and load meal plan on page load
 startStateStream();
+updateMealDisplay();
 </script>
 {% endblock %}

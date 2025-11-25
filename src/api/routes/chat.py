@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """Response from chat endpoint."""
+    success: bool = True
     response: str
     session_id: str
     meal_plan_changed: bool

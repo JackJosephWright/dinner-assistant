@@ -17,8 +17,8 @@
         </p>
     </div>
 
-    {% if not meal_plan_id %}
-    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+    <!-- No meal plan warning - controlled by JavaScript -->
+    <div id="noMealPlanWarning" class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 hidden">
         <div class="flex">
             <div class="flex-shrink-0">
                 <i class="fas fa-exclamation-triangle text-yellow-400"></i>
@@ -30,7 +30,6 @@
             </div>
         </div>
     </div>
-    {% endif %}
 
     <!-- Chat Interface -->
     <div class="bg-white shadow-lg rounded-lg mb-6">
@@ -166,12 +165,8 @@
                 <div id="emptyState" class="text-center py-12">
                     <i class="fas fa-shopping-basket text-6xl text-gray-300 mb-4"></i>
                     <h3 class="text-lg font-medium text-gray-900 mb-2">No Shopping List Yet</h3>
-                    <p class="text-gray-500">
-                        {% if meal_plan_id %}
-                        Chat: "Create shopping list" to generate your list from your meal plan.
-                        {% else %}
+                    <p id="emptyStateMessage" class="text-gray-500">
                         Create a meal plan first, then return here to generate your shopping list.
-                        {% endif %}
                     </p>
                 </div>
             {% endif %}
@@ -201,6 +196,136 @@
 
 {% block extra_scripts %}
 <script>
+// Session management - use same session across all pages
+let sessionId = localStorage.getItem('dinnerAssistantSessionId');
+if (!sessionId) {
+    sessionId = 'session_' + Date.now();
+    localStorage.setItem('dinnerAssistantSessionId', sessionId);
+}
+
+// Get meal plan ID from localStorage
+let currentMealPlanId = localStorage.getItem('currentMealPlanId');
+
+// Check meal plan status on page load
+function checkMealPlanStatus() {
+    const warning = document.getElementById('noMealPlanWarning');
+    const emptyMessage = document.getElementById('emptyStateMessage');
+
+    if (!currentMealPlanId) {
+        // No meal plan - show warning
+        if (warning) warning.classList.remove('hidden');
+        if (emptyMessage) {
+            emptyMessage.textContent = 'Create a meal plan first, then return here to generate your shopping list.';
+        }
+    } else {
+        // Have meal plan - hide warning, update message
+        if (warning) warning.classList.add('hidden');
+        if (emptyMessage) {
+            emptyMessage.textContent = 'Shopping list will appear here when your meal plan is ready.';
+        }
+    }
+}
+
+// Load shopping list from API
+async function loadShoppingList() {
+    const mealPlanId = localStorage.getItem('currentMealPlanId');
+    if (!mealPlanId) {
+        console.log('No meal plan ID, cannot load shopping list');
+        return;
+    }
+
+    try {
+        console.log('Loading shopping list for meal plan:', mealPlanId);
+        const response = await fetch(`/api/shop/current?meal_plan_id=${mealPlanId}`);
+        const result = await response.json();
+
+        if (result.success && result.grocery_list) {
+            console.log('Shopping list loaded:', result.grocery_list);
+            renderShoppingList(result.grocery_list);
+        } else {
+            console.log('No shopping list found yet');
+        }
+    } catch (error) {
+        console.error('Error loading shopping list:', error);
+    }
+}
+
+// Render shopping list in the container
+function renderShoppingList(groceryList) {
+    const container = document.getElementById('shoppingListContainer');
+    const itemCount = document.getElementById('itemCount');
+
+    // Calculate total items from store_sections
+    let totalItems = 0;
+    const storeSections = groceryList.store_sections || {};
+    for (const items of Object.values(storeSections)) {
+        totalItems += items.length;
+    }
+
+    if (itemCount) {
+        itemCount.textContent = totalItems;
+    }
+
+    if (totalItems === 0) {
+        // Show empty state
+        container.innerHTML = `
+            <div id="emptyState" class="text-center py-12">
+                <i class="fas fa-shopping-basket text-6xl text-gray-300 mb-4"></i>
+                <h3 class="text-lg font-medium text-gray-900 mb-2">No Shopping List Yet</h3>
+                <p id="emptyStateMessage" class="text-gray-500">Shopping list will appear here when your meal plan is ready.</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Render shopping list sections
+    let html = `
+        <div id="shoppingList">
+            <div class="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                <p class="text-sm text-green-800">
+                    <i class="fas fa-check-circle"></i> Shopping list for week of ${groceryList.week_of || 'current week'}
+                    <span class="ml-2 font-semibold">${totalItems} items</span>
+                </p>
+            </div>
+    `;
+
+    for (const [section, items] of Object.entries(storeSections)) {
+        html += `
+            <div class="mb-6">
+                <h3 class="text-lg font-semibold text-gray-900 mb-3 pb-2 border-b-2 border-gray-200 uppercase tracking-wide">
+                    <i class="fas fa-tag text-gray-500"></i> ${section}
+                </h3>
+                <div class="space-y-2">
+        `;
+
+        for (const item of items) {
+            const recipeSources = item.recipe_sources || [];
+            html += `
+                <div class="flex items-start p-3 hover:bg-gray-50 rounded-md transition-colors">
+                    <input type="checkbox" class="mt-1 h-5 w-5 text-green-600 rounded border-gray-300 focus:ring-green-500">
+                    <div class="ml-3 flex-1">
+                        <div class="font-medium text-gray-900">${item.name}</div>
+                        <div class="text-sm text-gray-600">${item.quantity || ''}</div>
+                        ${recipeSources.length > 0 ? `
+                        <div class="text-xs text-gray-500 mt-1">
+                            <i class="fas fa-utensils"></i> ${recipeSources.join(', ')}
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        html += `
+                </div>
+            </div>
+        `;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+}
+
 // Chat functionality
 let chatHistory = [];
 
@@ -225,12 +350,13 @@ document.getElementById('chatForm')?.addEventListener('submit', async (e) => {
     scrollToBottom();
 
     try {
-        // Send to API with shop context
+        // Send to API with shop context and session
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: message,
+                session_id: sessionId,
                 context: 'shop'  // Tell chatbot we're in shopping mode
             }),
         });
@@ -377,9 +503,9 @@ function startStateStream() {
             // Do nothing - shopping list is auto-regenerated on backend
             // We'll receive shopping_list_changed event next
         } else if (update.type === 'shopping_list_changed') {
-            console.log('Shopping list changed, reloading...');
-            // Reload page to show updated shopping list
-            window.location.reload();
+            console.log('Shopping list changed, refreshing...');
+            // Fetch and re-render shopping list (no page reload)
+            loadShoppingList();
         }
         // Ignore keepalive messages
     };
@@ -435,6 +561,7 @@ async function regenerateShoppingList() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: 'create shopping list',
+                session_id: sessionId,
                 context: 'shop'
             }),
         });
@@ -451,9 +578,11 @@ async function regenerateShoppingList() {
     }
 }
 
-// Start state stream on page load
+// Start state stream and check meal plan on page load
 document.addEventListener('DOMContentLoaded', () => {
+    checkMealPlanStatus();
     startStateStream();
+    loadShoppingList();  // Load existing shopping list
 });
 </script>
 {% endblock %}

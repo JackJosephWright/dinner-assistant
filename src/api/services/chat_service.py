@@ -187,7 +187,7 @@ class AsyncChatService:
 
             # Check what changed
             meal_plan_changed = session.chatbot.last_meal_plan is not None
-            shopping_list_changed = False  # TODO: Track this
+            shopping_list_changed = False
 
             # Publish completion
             await self.pubsub.publish(f"progress:{session_id}", {
@@ -201,6 +201,15 @@ class AsyncChatService:
                     "type": "meal_plan_changed",
                     "session_id": session_id
                 })
+
+                # Auto-generate shopping list in background
+                meal_plan_id = session.chatbot.current_meal_plan_id
+                if meal_plan_id:
+                    asyncio.create_task(
+                        self._generate_shopping_list_background(
+                            session, meal_plan_id, session_id
+                        )
+                    )
 
             return {
                 "response": response,
@@ -253,6 +262,44 @@ class AsyncChatService:
                 logger.info(f"Cleaned up session: {session_id}")
                 return True
             return False
+
+    async def _generate_shopping_list_background(
+        self,
+        session: ChatSession,
+        meal_plan_id: str,
+        session_id: str
+    ) -> None:
+        """
+        Generate shopping list in background after meal plan creation.
+
+        This runs asynchronously so the chat response returns immediately.
+        """
+        try:
+            logger.info(f"Auto-generating shopping list for meal plan: {meal_plan_id}")
+
+            # Run the sync create_shopping_list in thread pool
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _executor,
+                session.chatbot.assistant.create_shopping_list,
+                meal_plan_id
+            )
+
+            if result.get("success"):
+                grocery_list_id = result.get("grocery_list_id")
+                logger.info(f"Shopping list generated: {grocery_list_id}")
+
+                # Broadcast shopping list changed event
+                await self.pubsub.publish("state:shopping_list_changed", {
+                    "type": "shopping_list_changed",
+                    "shopping_list_id": grocery_list_id,
+                    "meal_plan_id": meal_plan_id
+                })
+            else:
+                logger.warning(f"Failed to generate shopping list: {result.get('error')}")
+
+        except Exception as e:
+            logger.exception(f"Error generating shopping list in background: {e}")
 
 
 # Global service instance (set during app startup)

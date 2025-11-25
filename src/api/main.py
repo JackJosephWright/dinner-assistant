@@ -152,6 +152,7 @@ async def progress_stream(session_id: str, request: Request):
 
     async def event_generator() -> AsyncGenerator[dict, None]:
         """Generate SSE events from Redis pub/sub channel."""
+        import json
         logger.debug(f"SSE client connected to progress:{session_id}")
 
         async for message in pubsub.subscribe(channel, timeout=30.0):
@@ -160,8 +161,13 @@ async def progress_stream(session_id: str, request: Request):
                 logger.debug(f"SSE client disconnected from {channel}")
                 break
 
-            # Yield message (will be auto-serialized by EventSourceResponse)
-            yield message
+            # Skip keepalive messages (just send a heartbeat)
+            if message.get("type") == "keepalive":
+                yield {"data": "keepalive"}
+                continue
+
+            # Wrap message properly for SSE (sse_starlette expects 'data' key)
+            yield {"data": json.dumps(message)}
 
             # Exit on terminal status
             if message.get("status") in ("complete", "error"):
@@ -199,6 +205,7 @@ async def state_stream(request: Request, tab_id: str = None):
 
     async def event_generator() -> AsyncGenerator[dict, None]:
         """Generate SSE events from state broadcast channels."""
+        import json
         logger.debug(f"State stream connected: tab={tab_id}")
 
         async for message in pubsub.subscribe_broadcast("state:*"):
@@ -207,7 +214,13 @@ async def state_stream(request: Request, tab_id: str = None):
                 logger.debug(f"State stream disconnected: tab={tab_id}")
                 break
 
-            yield message
+            # Skip keepalive messages
+            if message.get("type") == "keepalive":
+                yield {"data": "keepalive"}
+                continue
+
+            # Wrap message properly for SSE
+            yield {"data": json.dumps(message)}
 
     return EventSourceResponse(
         event_generator(),

@@ -917,7 +917,13 @@ function removeTypingIndicator() {
 
 // Progress streaming support
 let progressEventSource = null;
-let sessionId = 'session_' + Date.now();  // Unique session ID for this page load
+// Persist sessionId across page loads using localStorage
+let sessionId = localStorage.getItem('dinnerAssistantSessionId');
+if (!sessionId) {
+    sessionId = 'session_' + Date.now();
+    localStorage.setItem('dinnerAssistantSessionId', sessionId);
+}
+console.log('Using session:', sessionId);
 
 function startProgressStream() {
     // Close existing stream if any
@@ -1146,16 +1152,31 @@ async function updateMealPlanDisplay() {
         displayElement.innerHTML = createSkeletonHTML();
         console.log('⏳ Showing loading skeleton...');
 
-        // Fetch data
+        // Fetch data - try session first, fallback to localStorage meal_plan_id
         console.log('🌐 Fetching /api/plan/current with session:', sessionId);
-        const response = await fetch(`/api/plan/current?session_id=${sessionId}`);
-        const result = await response.json();
+        let response = await fetch(`/api/plan/current?session_id=${sessionId}`);
+        let result = await response.json();
         console.log('📦 Fetched plan data:', result);
+
+        // If session lookup fails, try fetching by saved meal_plan_id
+        if (!result.success || !result.plan) {
+            const savedPlanId = localStorage.getItem('currentMealPlanId');
+            if (savedPlanId) {
+                console.log('🔄 Session empty, trying saved plan ID:', savedPlanId);
+                response = await fetch(`/api/plan/${savedPlanId}`);
+                result = await response.json();
+                console.log('📦 Fetched by plan ID:', result);
+            }
+        }
 
         if (result.success && result.plan) {
             const plan = result.plan;
             console.log('✅ Plan has', plan.meals.length, 'meals');
             console.log('Meals:', plan.meals.map(m => m.recipe_name));
+            // Store meal_plan_id for persistence across page loads
+            if (plan.id) {
+                localStorage.setItem('currentMealPlanId', plan.id);
+            }
 
             // Format date for display
             const weekOfDate = new Date(plan.week_of);
@@ -1494,6 +1515,10 @@ document.addEventListener('DOMContentLoaded', () => {
             localStorage.setItem('verboseMode', e.target.checked);
         });
     }
+
+    // Load existing meal plan from session/localStorage on page load
+    console.log('🔄 Page loaded, checking for existing meal plan...');
+    updateMealPlanDisplay();
 });
 </script>
 {% endblock %}

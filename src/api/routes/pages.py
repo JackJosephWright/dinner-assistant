@@ -20,6 +20,11 @@ from ..services.plan_service import get_plan_service, AsyncPlanService
 
 logger = logging.getLogger(__name__)
 
+# Check if API key is available for chat features
+def is_api_key_available() -> bool:
+    """Check if Anthropic API key is configured."""
+    return bool(os.environ.get('ANTHROPIC_API_KEY'))
+
 router = APIRouter()
 
 # Set up Jinja2 templates (reuse Flask templates)
@@ -40,8 +45,9 @@ async def plan_page(request: Request):
         "plan.html",
         {
             "request": request,
-            "current_plan": None,
+            "current_plan": None,  # Plan loaded client-side
             "user_profile": None,
+            "api_key_available": is_api_key_available(),
         }
     )
 
@@ -56,7 +62,8 @@ async def shop_page(
         "shop.html",
         {
             "request": request,
-            "grocery_list": None,
+            "current_list": None,  # Shopping list loaded client-side
+            "api_key_available": is_api_key_available(),
         }
     )
 
@@ -71,7 +78,8 @@ async def cook_page(
         "cook.html",
         {
             "request": request,
-            "current_plan": None,
+            "current_plan": None,  # Plan loaded client-side
+            "api_key_available": is_api_key_available(),
         }
     )
 

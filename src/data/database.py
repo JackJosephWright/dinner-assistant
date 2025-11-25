@@ -770,6 +770,35 @@ class DatabaseInterface:
                 )
             return None
 
+    def get_grocery_list_by_meal_plan(self, meal_plan_id: str) -> Optional[GroceryList]:
+        """
+        Get the most recent grocery list for a meal plan.
+
+        Looks up the meal plan to get its week_of, then finds the
+        corresponding grocery list.
+
+        Args:
+            meal_plan_id: Meal plan ID
+
+        Returns:
+            GroceryList object or None if not found
+        """
+        # First get the meal plan to find its week_of
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT week_of FROM meal_plans WHERE id = ?", (meal_plan_id,))
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            week_of = row["week_of"]
+
+        # Now get the grocery list for that week
+        return self.get_grocery_list_by_week(week_of)
+
     # ==================== Preferences Operations ====================
 
     def get_preference(self, key: str) -> Optional[str]:
