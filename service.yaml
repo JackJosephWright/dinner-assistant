@@ -25,17 +25,20 @@ spec:
             path: /health
             port: 8080
           initialDelaySeconds: 0
-          timeoutSeconds: 1
-          periodSeconds: 3
-          failureThreshold: 10
+          timeoutSeconds: 5
+          periodSeconds: 5
+          failureThreshold: 20
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
+          # More lenient settings to avoid killing instances during LLM calls
+          # Old: timeout 1s, period 10s, threshold 3 = killed after 30s of unresponsive
+          # New: timeout 10s, period 30s, threshold 5 = killed after 150s of unresponsive
           initialDelaySeconds: 0
-          timeoutSeconds: 1
-          periodSeconds: 10
-          failureThreshold: 3
+          timeoutSeconds: 10
+          periodSeconds: 30
+          failureThreshold: 5
         env:
         - name: ANTHROPIC_API_KEY
           value: "${ANTHROPIC_API_KEY}"

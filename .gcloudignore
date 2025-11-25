@@ -44,7 +44,10 @@ demo_*.py
 run.sh
 run_chatbot.sh
 
-# IMPORTANT: Do NOT ignore .db files - we need them!
-# The default .gcloudignore often excludes large files, but we need our databases
-!data/*.db
-!*.db
+# Database files:
+# - Exclude production database (2.2GB) - using dev database instead
+# - Include dev database (1.2GB) - copied as recipes.db in Docker
+# - Include user_data.db (6MB) - user preferences and history
+data/recipes.db
+!data/recipes_dev.db
+!data/user_data.db

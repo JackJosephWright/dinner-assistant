@@ -17,9 +17,10 @@ import uuid
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, jsonify, session, Response
+from flask import Flask, render_template, request, jsonify, session, Response, redirect, url_for, flash
 from flask_cors import CORS
 from dotenv import load_dotenv
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Load environment variables from .env file
 load_dotenv()
@@ -85,13 +86,15 @@ def log_legacy_fallback(context: str):
 # Simple user authentication
 USERS = {
     "admin": "password",
-    "agusta": "password"
+    "agusta": "password",
+    "lj": "password"
 }
 
 # User ID mapping (for snapshot storage)
 USER_IDS = {
     "admin": 1,
-    "agusta": 2
+    "agusta": 2,
+    "lj": 3
 }
 
 def login_required(f):
@@ -108,6 +111,23 @@ def login_required(f):
 # Initialize assistant (will use agentic agents if API key is set)
 # Note: We'll set the progress callback per request
 assistant = MealPlanningAssistant(db_dir="data", use_agentic=True)
+
+
+def migrate_hardcoded_users():
+    """Migrate hardcoded users to database on startup (idempotent)."""
+    for username, password in USERS.items():
+        existing = assistant.db.get_user_by_username(username)
+        if not existing:
+            password_hash = generate_password_hash(password)
+            user_id = assistant.db.create_user(username, password_hash)
+            if user_id:
+                logger.info(f"Migrated hardcoded user to database: {username} (ID: {user_id})")
+        else:
+            logger.debug(f"User already exists in database: {username}")
+
+
+# Migrate existing hardcoded users to database
+migrate_hardcoded_users()
 
 # Wire up performance monitoring if available
 if PERFORMANCE_MONITORING_ENABLED:
@@ -254,7 +274,15 @@ def progress_stream():
             # Client disconnected
             cleanup_progress_queue(session_id)
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # Disable proxy buffering (critical for Cloud Run)
+            'Connection': 'keep-alive',
+        }
+    )
 
 
 def broadcast_state_change(event_type: str, data: dict):
@@ -312,7 +340,15 @@ def state_stream():
             # Client disconnected
             cleanup_state_change_queue(tab_id)
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # Disable proxy buffering (critical for Cloud Run)
+            'Connection': 'keep-alive',
+        }
+    )
 
 
 def restore_session_from_db():
@@ -373,26 +409,79 @@ def restore_session_from_db():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Login page."""
+    """Login page with database authentication."""
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
 
+        # Try database authentication first
+        user = assistant.db.get_user_by_username(username)
+        if user and check_password_hash(user['password_hash'], password):
+            session['username'] = username
+            session['user_id'] = user['id']
+            logger.info(f"User {username} (ID: {user['id']}) logged in successfully via database")
+            return redirect('/plan')
+
+        # Fallback to hardcoded users (for backward compatibility during migration)
         if username in USERS and USERS[username] == password:
             session['username'] = username
-            session['user_id'] = USER_IDS.get(username, 1)  # Default to 1 if not in mapping
-            logger.info(f"User {username} (ID: {session['user_id']}) logged in successfully")
-            from flask import redirect
+            session['user_id'] = USER_IDS.get(username, 1)
+            logger.info(f"User {username} (ID: {session['user_id']}) logged in via hardcoded auth")
             return redirect('/plan')
-        else:
-            return render_template('login.html', error='Invalid username or password')
+
+        return render_template('login.html', error='Invalid username or password')
 
     # If already logged in, redirect to plan
     if 'username' in session:
-        from flask import redirect
         return redirect('/plan')
 
     return render_template('login.html')
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    """User registration page."""
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        confirm_password = request.form.get('confirm_password', '')
+
+        # Validation
+        if not username or not password:
+            return render_template('register.html', error='Username and password are required')
+
+        if len(username) < 3:
+            return render_template('register.html', error='Username must be at least 3 characters')
+
+        if len(password) < 4:
+            return render_template('register.html', error='Password must be at least 4 characters')
+
+        if password != confirm_password:
+            return render_template('register.html', error='Passwords do not match')
+
+        # Check if username already exists
+        existing_user = assistant.db.get_user_by_username(username)
+        if existing_user:
+            return render_template('register.html', error='Username already taken')
+
+        # Create user
+        password_hash = generate_password_hash(password)
+        user_id = assistant.db.create_user(username, password_hash)
+
+        if user_id:
+            logger.info(f"New user registered: {username} (ID: {user_id})")
+            # Auto-login after registration
+            session['username'] = username
+            session['user_id'] = user_id
+            return redirect('/plan')
+        else:
+            return render_template('register.html', error='Failed to create account. Please try again.')
+
+    # If already logged in, redirect to plan
+    if 'username' in session:
+        return redirect('/plan')
+
+    return render_template('register.html')
 
 
 @app.route('/logout')

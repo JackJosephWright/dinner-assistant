@@ -431,6 +431,8 @@ function displayRecipe(data) {
 // SSE State Synchronization (cross-tab)
 let stateEventSource = null;
 let tabId = 'cook_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+let stateStreamReconnectDelay = 1000; // Start with 1 second
+let stateStreamReconnectTimer = null;
 
 async function updateMealDisplay() {
     /**
@@ -494,8 +496,19 @@ function startStateStream() {
         stateEventSource.close();
     }
 
+    // Clear any pending reconnect
+    if (stateStreamReconnectTimer) {
+        clearTimeout(stateStreamReconnectTimer);
+        stateStreamReconnectTimer = null;
+    }
+
     // Create new SSE connection for state changes
     stateEventSource = new EventSource(`/api/state-stream?tab_id=${tabId}`);
+
+    stateEventSource.onopen = () => {
+        console.log('State stream connected');
+        stateStreamReconnectDelay = 1000; // Reset delay on successful connection
+    };
 
     stateEventSource.onmessage = (event) => {
         const update = JSON.parse(event.data);
@@ -510,9 +523,15 @@ function startStateStream() {
     };
 
     stateEventSource.onerror = (error) => {
-        console.error('State stream error:', error);
+        console.error('State stream error, will reconnect in', stateStreamReconnectDelay/1000, 'seconds');
         stateEventSource.close();
         stateEventSource = null;
+
+        // Auto-reconnect with exponential backoff (max 30 seconds)
+        stateStreamReconnectTimer = setTimeout(() => {
+            startStateStream();
+        }, stateStreamReconnectDelay);
+        stateStreamReconnectDelay = Math.min(stateStreamReconnectDelay * 2, 30000);
     };
 }
 

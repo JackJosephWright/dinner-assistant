@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Meal Planning Assistant</title>
+    <title>Create Account - Meal Planning Assistant</title>
 
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -16,8 +16,8 @@
         <!-- Logo -->
         <div class="text-center mb-8">
             <i class="fas fa-utensils text-6xl text-indigo-600 mb-4"></i>
-            <h1 class="text-3xl font-bold text-gray-800">Meal Planner</h1>
-            <p class="text-gray-600 mt-2">Sign in to continue</p>
+            <h1 class="text-3xl font-bold text-gray-800">Create Account</h1>
+            <p class="text-gray-600 mt-2">Join the meal planning assistant</p>
         </div>
 
         <!-- Error Message -->
@@ -27,9 +27,9 @@
         </div>
         {% endif %}
 
-        <!-- Login Form -->
-        <form method="POST" action="/login">
-            <div class="mb-6">
+        <!-- Registration Form -->
+        <form method="POST" action="/register">
+            <div class="mb-4">
                 <label for="username" class="block text-gray-700 text-sm font-semibold mb-2">
                     <i class="fas fa-user mr-2"></i>Username
                 </label>
@@ -39,12 +39,13 @@
                     name="username"
                     required
                     autofocus
+                    minlength="3"
                     class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                    placeholder="Enter your username"
+                    placeholder="Choose a username (min 3 characters)"
                 >
             </div>
 
-            <div class="mb-6">
+            <div class="mb-4">
                 <label for="password" class="block text-gray-700 text-sm font-semibold mb-2">
                     <i class="fas fa-lock mr-2"></i>Password
                 </label>
@@ -53,8 +54,24 @@
                     id="password"
                     name="password"
                     required
+                    minlength="4"
                     class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                    placeholder="Enter your password"
+                    placeholder="Create a password (min 4 characters)"
+                >
+            </div>
+
+            <div class="mb-6">
+                <label for="confirm_password" class="block text-gray-700 text-sm font-semibold mb-2">
+                    <i class="fas fa-lock mr-2"></i>Confirm Password
+                </label>
+                <input
+                    type="password"
+                    id="confirm_password"
+                    name="confirm_password"
+                    required
+                    minlength="4"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                    placeholder="Confirm your password"
                 >
             </div>
 
@@ -62,15 +79,15 @@
                 type="submit"
                 class="w-full bg-indigo-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-200 shadow-lg"
             >
-                <i class="fas fa-sign-in-alt mr-2"></i>Sign In
+                <i class="fas fa-user-plus mr-2"></i>Create Account
             </button>
         </form>
 
-        <!-- Link to Register -->
+        <!-- Link to Login -->
         <div class="mt-6 text-center">
             <p class="text-gray-600">
-                Don't have an account?
-                <a href="/register" class="text-indigo-600 hover:text-indigo-800 font-semibold">Create one</a>
+                Already have an account?
+                <a href="/login" class="text-indigo-600 hover:text-indigo-800 font-semibold">Sign in</a>
             </p>
         </div>
 

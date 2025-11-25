@@ -221,6 +221,16 @@ class DatabaseInterface:
                 ON meal_plan_snapshots (user_id, week_of)
             """)
 
+            # Users table for authentication
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
             conn.commit()
             logger.info("User database initialized")
 
@@ -1414,3 +1424,78 @@ class DatabaseInterface:
             rows = cursor.fetchall()
 
             return [json.loads(row['snapshot_json']) for row in rows]
+
+    # ==================== User Authentication Operations ====================
+
+    def create_user(self, username: str, password_hash: str) -> Optional[int]:
+        """
+        Create a new user.
+
+        Args:
+            username: Unique username
+            password_hash: Hashed password (use werkzeug.security.generate_password_hash)
+
+        Returns:
+            User ID if created, None if username already exists
+        """
+        try:
+            with sqlite3.connect(self.user_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO users (username, password_hash, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (username, password_hash, datetime.now().isoformat())
+                )
+                conn.commit()
+                user_id = cursor.lastrowid
+                logger.info(f"Created user: {username} (ID: {user_id})")
+                return user_id
+        except sqlite3.IntegrityError:
+            logger.warning(f"Username already exists: {username}")
+            return None
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """
+        Get user by username.
+
+        Args:
+            username: Username to look up
+
+        Returns:
+            Dict with id, username, password_hash, created_at or None if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
+                (username,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get user by ID.
+
+        Args:
+            user_id: User ID to look up
+
+        Returns:
+            Dict with id, username, password_hash, created_at or None if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, username, password_hash, created_at FROM users WHERE id = ?",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
