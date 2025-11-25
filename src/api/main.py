@@ -50,10 +50,12 @@ async def lifespan(app: FastAPI):
                 app.state.pubsub_type = "redis"
                 logger.info("Redis pub/sub connected")
 
-                # Initialize chat service with pub/sub
+                # Initialize services with pub/sub
                 from .services.chat_service import init_chat_service
+                from .services.plan_service import init_plan_service
                 init_chat_service(pubsub)
-                logger.info("Chat service initialized")
+                init_plan_service(pubsub)
+                logger.info("Services initialized (chat, plan)")
 
                 yield
         except Exception as e:
@@ -63,10 +65,12 @@ async def lifespan(app: FastAPI):
                 app.state.pubsub = pubsub
                 app.state.pubsub_type = "local"
 
-                # Initialize chat service with local pub/sub
+                # Initialize services with local pub/sub
                 from .services.chat_service import init_chat_service
+                from .services.plan_service import init_plan_service
                 init_chat_service(pubsub)
-                logger.info("Chat service initialized (local mode)")
+                init_plan_service(pubsub)
+                logger.info("Services initialized (local mode)")
 
                 yield
     else:
@@ -75,10 +79,12 @@ async def lifespan(app: FastAPI):
             app.state.pubsub = pubsub
             app.state.pubsub_type = "local"
 
-            # Initialize chat service with local pub/sub
+            # Initialize services with local pub/sub
             from .services.chat_service import init_chat_service
+            from .services.plan_service import init_plan_service
             init_chat_service(pubsub)
-            logger.info("Chat service initialized (local mode)")
+            init_plan_service(pubsub)
+            logger.info("Services initialized (local mode)")
 
             yield
 
@@ -213,17 +219,15 @@ async def state_stream(request: Request, tab_id: str = None):
 
 
 # Import and include route modules
-from .routes import chat
+from .routes import chat, plan, shop, cook
 from .services.chat_service import init_chat_service
+from .services.plan_service import init_plan_service
 
-# Include chat router
+# Include all routers
 app.include_router(chat.router, prefix="/api", tags=["chat"])
-
-# TODO: Add more routes as we build them out
-# from .routes import plan, shop, cook
-# app.include_router(plan.router, prefix="/api", tags=["planning"])
-# app.include_router(shop.router, prefix="/api", tags=["shopping"])
-# app.include_router(cook.router, prefix="/api", tags=["cooking"])
+app.include_router(plan.router, prefix="/api", tags=["planning"])
+app.include_router(shop.router, prefix="/api", tags=["shopping"])
+app.include_router(cook.router, prefix="/api", tags=["cooking"])
 
 
 if __name__ == "__main__":
