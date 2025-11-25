@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from pydantic import BaseModel
 
 from ..services.plan_service import get_plan_service, AsyncPlanService
+from ..services.chat_service import get_chat_service
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,55 @@ async def swap_meal(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Session-based state (in production, use Redis or database)
+# This is a simple in-memory store for demo purposes
+_session_state: dict = {}
+
+
+def get_session_state(session_id: str) -> dict:
+    """Get or create session state."""
+    if session_id not in _session_state:
+        _session_state[session_id] = {}
+    return _session_state[session_id]
+
+
+@router.get("/plan/current", response_model=PlanResponse)
+async def get_current_plan(
+    request: Request,
+    session_id: str = "default",
+    service: AsyncPlanService = Depends(get_service)
+):
+    """
+    Get the current meal plan for the session.
+
+    This endpoint is used by the frontend to fetch the active meal plan.
+    Gets the meal_plan_id from the chat service's session state.
+    """
+    try:
+        # Get meal_plan_id from chat service's session state
+        chat_service = get_chat_service()
+        chat_state = await chat_service.get_session_state(session_id)
+
+        if chat_state:
+            meal_plan_id = chat_state.get("current_meal_plan_id")
+        else:
+            meal_plan_id = None
+
+        if not meal_plan_id:
+            return PlanResponse(success=False, error="No active meal plan")
+
+        plan = await service.get_current_plan(meal_plan_id)
+
+        if plan is None:
+            return PlanResponse(success=False, error="Meal plan not found")
+
+        return PlanResponse(success=True, plan=plan)
+
+    except Exception as e:
+        logger.exception(f"Error getting current plan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/plan/{meal_plan_id}", response_model=PlanResponse)
 async def get_plan(
     meal_plan_id: str,
@@ -207,48 +257,6 @@ async def search_recipes(
 
     except Exception as e:
         logger.exception(f"Error searching recipes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Session-based state (in production, use Redis or database)
-# This is a simple in-memory store for demo purposes
-_session_state: dict = {}
-
-
-def get_session_state(session_id: str) -> dict:
-    """Get or create session state."""
-    if session_id not in _session_state:
-        _session_state[session_id] = {}
-    return _session_state[session_id]
-
-
-@router.get("/plan/current", response_model=PlanResponse)
-async def get_current_plan(
-    request: Request,
-    session_id: str = "default",
-    service: AsyncPlanService = Depends(get_service)
-):
-    """
-    Get the current meal plan for the session.
-
-    This endpoint is used by the frontend to fetch the active meal plan.
-    """
-    try:
-        state = get_session_state(session_id)
-        meal_plan_id = state.get("meal_plan_id")
-
-        if not meal_plan_id:
-            return PlanResponse(success=False, error="No active meal plan")
-
-        plan = await service.get_current_plan(meal_plan_id)
-
-        if plan is None:
-            return PlanResponse(success=False, error="Meal plan not found")
-
-        return PlanResponse(success=True, plan=plan)
-
-    except Exception as e:
-        logger.exception(f"Error getting current plan: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

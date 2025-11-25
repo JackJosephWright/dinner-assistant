@@ -277,6 +277,8 @@ class AsyncPlanService:
                     meal_dict['estimated_time'] = meal.recipe.estimated_time
                     meal_dict['cuisine'] = meal.recipe.cuisine
                     meal_dict['difficulty'] = meal.recipe.difficulty
+                    meal_dict['ingredients'] = meal.recipe.ingredients
+                    meal_dict['servings'] = meal.recipe.servings
                 meal_dict['meal_date'] = meal_dict.pop('date', None)
                 enriched_meals.append(meal_dict)
 

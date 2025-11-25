@@ -116,6 +116,72 @@
 .fade-in {
     animation: fadeIn 0.5s ease-out;
 }
+
+/* Recipe hover popup tooltip */
+.meal-card-wrapper {
+    position: relative;
+}
+.recipe-tooltip {
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 0;
+    width: 300px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+    padding: 16px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-8px);
+    transition: all 0.2s ease;
+    z-index: 50;
+    pointer-events: none;
+}
+.meal-card-wrapper:hover .recipe-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0);
+}
+.recipe-tooltip::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 20px;
+    border: 8px solid transparent;
+    border-right-color: white;
+}
+.recipe-tooltip h4 {
+    font-weight: 600;
+    color: #4f46e5;
+    margin-bottom: 8px;
+}
+.recipe-tooltip .ingredients-list {
+    font-size: 13px;
+    color: #4b5563;
+    line-height: 1.5;
+}
+.recipe-tooltip .meta-info {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #e5e7eb;
+    font-size: 12px;
+    color: #6b7280;
+}
+/* Mobile: show popup below */
+@media (max-width: 768px) {
+    .recipe-tooltip {
+        left: 0;
+        top: calc(100% + 8px);
+        width: 100%;
+    }
+    .recipe-tooltip::before {
+        left: 20px;
+        top: -8px;
+        border: 8px solid transparent;
+        border-bottom-color: white;
+    }
+}
 </style>
 {% endblock %}
 
@@ -342,25 +408,51 @@
 
                     <div class="space-y-3 mb-6">
                         {% for meal in current_plan.meals %}
-                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-                            <div class="flex justify-between items-start">
-                                <div class="flex-1">
-                                    <h3 class="text-lg font-medium text-indigo-600 mb-1">{{ meal.recipe_name }}</h3>
-                                    <div class="flex items-center mb-2">
-                                        <span class="text-sm font-semibold text-gray-600">{{ meal.meal_date }}</span>
+                        <div class="meal-card-wrapper">
+                            <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+                                <div class="flex justify-between items-start">
+                                    <div class="flex-1">
+                                        <h3 class="text-lg font-medium text-indigo-600 mb-1">{{ meal.recipe_name }}</h3>
+                                        <div class="flex items-center mb-2">
+                                            <span class="text-sm font-semibold text-gray-600">{{ meal.meal_date }}</span>
+                                        </div>
+                                        {% if meal.description %}
+                                        <p class="text-sm text-gray-700 mt-2">{{ meal.description[:100] }}{% if meal.description|length > 100 %}...{% endif %}</p>
+                                        {% endif %}
+                                        <p class="text-sm text-gray-600 mt-2">
+                                            <i class="fas fa-clock"></i> {{ meal.estimated_time or '?' }} min
+                                            {% if meal.cuisine %}
+                                            • <i class="fas fa-globe"></i> {{ meal.cuisine }}
+                                            {% endif %}
+                                            {% if meal.difficulty %}
+                                            • {{ meal.difficulty }}
+                                            {% endif %}
+                                        </p>
                                     </div>
-                                    {% if meal.description %}
-                                    <p class="text-sm text-gray-700 mt-2">{{ meal.description[:150] }}{% if meal.description|length > 150 %}...{% endif %}</p>
-                                    {% endif %}
-                                    <p class="text-sm text-gray-600 mt-2">
-                                        <i class="fas fa-clock"></i> {{ meal.estimated_time }} min
-                                        {% if meal.cuisine %}
-                                        • <i class="fas fa-globe"></i> {{ meal.cuisine }}
-                                        {% endif %}
-                                        {% if meal.difficulty %}
-                                        • {{ meal.difficulty }}
-                                        {% endif %}
-                                    </p>
+                                    <div class="flex gap-2">
+                                        <a href="/cook?recipe={{ meal.recipe_id }}" class="text-orange-600 hover:text-orange-800" title="View Recipe">
+                                            <i class="fas fa-book-open"></i>
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Hover popup tooltip -->
+                            <div class="recipe-tooltip">
+                                <h4><i class="fas fa-utensils mr-2"></i>{{ meal.recipe_name }}</h4>
+                                {% if meal.description %}
+                                <p class="text-sm text-gray-700 mb-3">{{ meal.description[:200] }}{% if meal.description|length > 200 %}...{% endif %}</p>
+                                {% endif %}
+                                {% if meal.ingredients %}
+                                <div class="ingredients-list">
+                                    <strong><i class="fas fa-carrot mr-1"></i> Ingredients:</strong><br>
+                                    {{ meal.ingredients[:8]|join(' • ') }}{% if meal.ingredients|length > 8 %}...{% endif %}
+                                </div>
+                                {% endif %}
+                                <div class="meta-info">
+                                    <i class="fas fa-clock mr-1"></i> {{ meal.estimated_time or '?' }} min
+                                    {% if meal.cuisine %} • <i class="fas fa-globe mr-1"></i> {{ meal.cuisine }}{% endif %}
+                                    {% if meal.difficulty %} • {{ meal.difficulty }}{% endif %}
+                                    {% if meal.servings %} • <i class="fas fa-users mr-1"></i> {{ meal.servings }} servings{% endif %}
                                 </div>
                             </div>
                         </div>
@@ -835,7 +927,7 @@ function startProgressStream() {
     }
 
     // Create new SSE connection
-    progressEventSource = new EventSource(`/api/progress-stream?session_id=${sessionId}`);
+    progressEventSource = new EventSource(`/api/progress-stream/${sessionId}`);
 
     progressEventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -1056,8 +1148,8 @@ async function updateMealPlanDisplay() {
         console.log('⏳ Showing loading skeleton...');
 
         // Fetch data
-        console.log('🌐 Fetching /api/plan/current...');
-        const response = await fetch('/api/plan/current');
+        console.log('🌐 Fetching /api/plan/current with session:', sessionId);
+        const response = await fetch(`/api/plan/current?session_id=${sessionId}`);
         const result = await response.json();
         console.log('📦 Fetched plan data:', result);
 
@@ -1070,32 +1162,58 @@ async function updateMealPlanDisplay() {
             const weekOfDate = new Date(plan.week_of);
             const weekOfFormatted = weekOfDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-            // Build meal cards HTML
+            // Build meal cards HTML with hover popup
             const mealsHTML = plan.meals.map(meal => {
                 const mealDate = meal.meal_date ? new Date(meal.meal_date) : null;
                 const dateStr = mealDate ? mealDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : meal.date;
 
+                // Get ingredients from embedded recipe data
+                const ingredients = meal.ingredients || meal.recipe?.ingredients || [];
+                const ingredientsList = Array.isArray(ingredients)
+                    ? ingredients.slice(0, 8).map(i => typeof i === 'string' ? i : (i.name || i.item || i.original)).join(' • ')
+                    : '';
+                const ingredientCount = Array.isArray(ingredients) ? ingredients.length : 0;
+
                 return `
-                    <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow fade-in">
-                        <div class="flex justify-between items-start">
-                            <div class="flex-1">
-                                <h3 class="text-lg font-medium text-indigo-600 mb-1">${meal.recipe_name}</h3>
-                                <div class="flex items-center mb-2">
-                                    <span class="text-sm font-semibold text-gray-600">${dateStr}</span>
+                    <div class="meal-card-wrapper">
+                        <div class="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow fade-in">
+                            <div class="flex justify-between items-start">
+                                <div class="flex-1">
+                                    <h3 class="text-lg font-medium text-indigo-600 mb-1">${meal.recipe_name}</h3>
+                                    <div class="flex items-center mb-2">
+                                        <span class="text-sm font-semibold text-gray-600">${dateStr}</span>
+                                    </div>
+                                    ${meal.description ? `
+                                    <p class="text-sm text-gray-700 mt-2">${meal.description.substring(0, 100)}${meal.description.length > 100 ? '...' : ''}</p>
+                                    ` : ''}
+                                    <p class="text-sm text-gray-600 mt-2">
+                                        <i class="fas fa-clock"></i> ${meal.estimated_time || '?'} min
+                                        ${meal.cuisine ? `• <i class="fas fa-globe"></i> ${meal.cuisine}` : ''}
+                                        ${meal.difficulty ? `• ${meal.difficulty}` : ''}
+                                    </p>
                                 </div>
-                                ${meal.description ? `
-                                <p class="text-sm text-gray-700 mt-2">${meal.description.substring(0, 150)}${meal.description.length > 150 ? '...' : ''}</p>
-                                ` : ''}
-                                <p class="text-sm text-gray-600 mt-2">
-                                    <i class="fas fa-clock"></i> ${meal.estimated_time} min
-                                    ${meal.cuisine ? `• <i class="fas fa-globe"></i> ${meal.cuisine}` : ''}
-                                    ${meal.difficulty ? `• ${meal.difficulty}` : ''}
-                                </p>
+                                <div class="flex gap-2">
+                                    <a href="/cook?recipe=${meal.recipe_id}" class="text-orange-600 hover:text-orange-800" title="View Recipe">
+                                        <i class="fas fa-book-open"></i>
+                                    </a>
+                                </div>
                             </div>
-                            <div class="flex gap-2">
-                                <a href="/cook?recipe=${meal.recipe_id}" class="text-orange-600 hover:text-orange-800" title="View Recipe">
-                                    <i class="fas fa-book-open"></i>
-                                </a>
+                        </div>
+                        <!-- Hover popup tooltip -->
+                        <div class="recipe-tooltip">
+                            <h4><i class="fas fa-utensils mr-2"></i>${meal.recipe_name}</h4>
+                            ${meal.description ? `<p class="text-sm text-gray-700 mb-3">${meal.description.substring(0, 200)}${meal.description.length > 200 ? '...' : ''}</p>` : ''}
+                            ${ingredientsList ? `
+                            <div class="ingredients-list">
+                                <strong><i class="fas fa-carrot mr-1"></i> Ingredients (${ingredientCount}):</strong><br>
+                                ${ingredientsList}${ingredientCount > 8 ? '...' : ''}
+                            </div>
+                            ` : ''}
+                            <div class="meta-info">
+                                <i class="fas fa-clock mr-1"></i> ${meal.estimated_time || '?'} min
+                                ${meal.cuisine ? ` • <i class="fas fa-globe mr-1"></i> ${meal.cuisine}` : ''}
+                                ${meal.difficulty ? ` • ${meal.difficulty}` : ''}
+                                ${meal.servings ? ` • <i class="fas fa-users mr-1"></i> ${meal.servings} servings` : ''}
                             </div>
                         </div>
                     </div>
