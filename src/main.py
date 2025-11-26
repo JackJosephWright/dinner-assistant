@@ -24,8 +24,8 @@ except ImportError:
 
 # Fallback to algorithmic agents
 from agents.enhanced_planning_agent import EnhancedPlanningAgent
-from agents.shopping_agent import ShoppingAgent
 from agents.cooking_agent import CookingAgent
+# Note: ShoppingAgent was removed - always use AgenticShoppingAgent
 
 # Setup logging
 logging.basicConfig(
@@ -60,10 +60,7 @@ class MealPlanningAssistant:
                 logger.warning("ANTHROPIC_API_KEY not set - falling back to algorithmic agents")
             logger.info("Initializing with algorithmic agents")
             self.planning_agent = EnhancedPlanningAgent(self.db)
-            # TEMPORARY: Commenting out algorithmic shopping agent for clarity
-            # Can be re-enabled later as fallback option
-            # self.shopping_agent = ShoppingAgent(self.db)
-            self.shopping_agent = AgenticShoppingAgent(self.db)  # Force agentic for now
+            self.shopping_agent = AgenticShoppingAgent(self.db)  # Always use LLM-powered
             self.cooking_agent = CookingAgent(self.db)
             self.is_agentic = False
 

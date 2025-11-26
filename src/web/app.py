@@ -220,13 +220,20 @@ def fetch_recipes_parallel(recipe_ids):
 
 
 def emit_progress(session_id: str, message: str, status: str = "progress"):
-    """Emit a progress update to the client."""
+    """Emit a progress update to the client.
+
+    Creates the queue if it doesn't exist to avoid race conditions where
+    emit_progress is called before the EventSource connects.
+    """
     with progress_lock:
-        if session_id in progress_queues:
-            progress_queues[session_id].put({
-                "status": status,
-                "message": message,
-            })
+        # Create queue if it doesn't exist (fixes race condition)
+        if session_id not in progress_queues:
+            progress_queues[session_id] = queue.Queue()
+            logger.debug(f"Created progress queue for session {session_id} in emit_progress")
+        progress_queues[session_id].put({
+            "status": status,
+            "message": message,
+        })
 
 
 def get_progress_queue(session_id: str) -> queue.Queue:
@@ -244,11 +251,11 @@ def cleanup_progress_queue(session_id: str):
             del progress_queues[session_id]
 
 
-@app.route('/api/progress-stream')
+@app.route('/api/progress-stream/<session_id>')
 @login_required
-def progress_stream():
+def progress_stream(session_id):
     """Server-Sent Events endpoint for progress updates."""
-    session_id = request.args.get('session_id', session.get('_id', 'default'))
+    # session_id comes from URL path parameter
 
     def generate():
         progress_queue = get_progress_queue(session_id)
