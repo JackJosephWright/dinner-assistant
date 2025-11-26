@@ -935,25 +935,34 @@ function startProgressStream() {
     progressEventSource = new EventSource(`/api/progress-stream/${sessionId}`);
 
     progressEventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        console.log('📨 Progress stream received event:', event.data.substring(0, 100));
+        try {
+            const data = JSON.parse(event.data);
+            console.log('📨 Parsed data, status:', data.status);
 
-        if (data.status === 'verbose') {
-            // Add verbose tool execution message
-            addVerboseMessage(data.message);
-        } else if (data.status === 'progress') {
-            // Update typing indicator with progress message
-            updateTypingMessage(data.message);
-        } else if (data.status === 'complete') {
-            // Show the assistant's response
-            removeTypingIndicator();
-            addAssistantMessage(data.message);
-            console.log('Chat complete');
-        } else if (data.status === 'error') {
-            // Show error
-            removeTypingIndicator();
-            addAssistantMessage('Error: ' + data.message);
+            if (data.status === 'verbose') {
+                // Add verbose tool execution message
+                addVerboseMessage(data.message);
+            } else if (data.status === 'progress') {
+                // Update typing indicator with progress message
+                updateTypingMessage(data.message);
+            } else if (data.status === 'complete') {
+                // Show the assistant's response
+                console.log('🎉 Received COMPLETE status, calling updateMealPlanDisplay()');
+                removeTypingIndicator();
+                addAssistantMessage(data.message);
+                console.log('Chat complete');
+                // Also update meal plan display directly (fallback if state stream missed the event)
+                updateMealPlanDisplay();
+            } else if (data.status === 'error') {
+                // Show error
+                removeTypingIndicator();
+                addAssistantMessage('Error: ' + data.message);
+            }
+            // Ignore keepalive messages
+        } catch (parseError) {
+            console.error('❌ Error parsing progress stream event:', parseError, 'Raw data:', event.data);
         }
-        // Ignore keepalive messages
     };
 
     progressEventSource.onerror = (error) => {
