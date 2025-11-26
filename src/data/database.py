@@ -294,7 +294,8 @@ class DatabaseInterface:
                 sql += f" AND id NOT IN ({placeholders})"
                 params.extend(exclude_ids)
 
-            sql += f" LIMIT ?"
+            # Randomize results to get variety in meal suggestions
+            sql += " ORDER BY RANDOM() LIMIT ?"
             params.append(limit)
 
             cursor.execute(sql, params)
