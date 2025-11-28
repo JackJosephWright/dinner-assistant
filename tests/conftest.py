@@ -160,24 +160,91 @@ def flask_app():
     Yields the base URL where the app is running.
     Automatically stops the server when tests complete.
     """
-    # Start Flask server in background
-    flask_process = subprocess.Popen(
-        ["python3", "src/web/app.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd="/home/jack_wright/dinner-assistant"
-    )
+    import socket
 
-    # Wait for server to start
-    time.sleep(3)
+    # Check if server is already running on port 5000
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_running = sock.connect_ex(('localhost', 5000)) == 0
+    sock.close()
+
+    flask_process = None
+    if not server_running:
+        # Start Flask server in background
+        flask_process = subprocess.Popen(
+            ["python3", "src/web/app.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd="/home/jack_wright/dinner-assistant"
+        )
+        # Wait for server to start
+        time.sleep(5)
 
     # Yield the base URL
     base_url = "http://localhost:5000"
     yield base_url
 
-    # Cleanup: stop the server
-    flask_process.terminate()
-    flask_process.wait(timeout=5)
+    # Cleanup: stop the server only if we started it
+    if flask_process:
+        flask_process.terminate()
+        flask_process.wait(timeout=5)
+
+
+@pytest.fixture
+def authenticated_page(page, flask_app):
+    """
+    Provide a Playwright page that is logged in.
+
+    Logs in as 'admin' user before returning the page.
+    """
+    # Navigate to login page
+    page.goto(f"{flask_app}/login")
+
+    # Fill in login form
+    page.fill('input[name="username"]', 'admin')
+    page.fill('input[name="password"]', 'password')
+
+    # Submit form
+    page.click('button[type="submit"]')
+
+    # Wait for redirect to complete
+    page.wait_for_url(f"{flask_app}/plan", timeout=5000)
+
+    return page
+
+
+def login_page(page, flask_app):
+    """
+    Helper function to log in a Playwright page.
+
+    Args:
+        page: Playwright page object
+        flask_app: Base URL of the Flask app
+    """
+    page.goto(f"{flask_app}/login")
+    page.fill('input[name="username"]', 'admin')
+    page.fill('input[name="password"]', 'password')
+    page.click('button[type="submit"]')
+    page.wait_for_url(f"{flask_app}/plan", timeout=5000)
+    return page
+
+
+@pytest.fixture
+def authenticated_browser(browser, flask_app):
+    """
+    Provide a browser context with session cookies for multi-page tests.
+
+    Creates a browser context where all new pages share the same session.
+    """
+    context = browser.new_context()
+    page = context.new_page()
+
+    # Login
+    login_page(page, flask_app)
+
+    # Now the context has the session cookie
+    yield context
+
+    context.close()
 
 
 @pytest.fixture(scope="function")

@@ -24,12 +24,13 @@ from data.models import PlannedMeal, MealPlan
 class MealPlanningChatbot:
     """LLM-powered chatbot with MCP tool access."""
 
-    def __init__(self, verbose=False, verbose_callback=None):
+    def __init__(self, verbose=False, verbose_callback=None, user_id: int = 1):
         """Initialize chatbot with LLM and tools.
 
         Args:
             verbose: If True, print tool execution details
             verbose_callback: Optional callback function(message: str) for streaming verbose output to web UI
+            user_id: User ID for multi-user support (defaults to 1)
         """
         # Check for API key
         api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -45,6 +46,9 @@ class MealPlanningChatbot:
         # Use agentic agents (API key is available)
         self.assistant = MealPlanningAssistant(db_dir="data", use_agentic=True)
         self.conversation_history = []
+
+        # User ID for multi-user support
+        self.user_id = user_id
 
         # Current context
         self.current_meal_plan_id = None
@@ -100,7 +104,7 @@ class MealPlanningChatbot:
     def _load_most_recent_plan(self):
         """Load the most recent meal plan automatically on startup."""
         try:
-            recent_plans = self.assistant.db.get_recent_meal_plans(limit=1)
+            recent_plans = self.assistant.db.get_recent_meal_plans(user_id=self.user_id, limit=1)
             if recent_plans:
                 self.last_meal_plan = recent_plans[0]
                 self.current_meal_plan_id = recent_plans[0].id
@@ -877,7 +881,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     return f"Only found {len(filtered)} recipes matching all constraints, need {num_days}. Try relaxing constraints or reducing days."
 
                 # 4. LLM selects with variety
-                recent_meals = self.assistant.db.get_meal_history(weeks_back=2)
+                recent_meals = self.assistant.db.get_meal_history(user_id=self.user_id, weeks_back=2)
                 recent_names = [m.recipe.name for m in recent_meals] if recent_meals else []
 
                 # Get user's original request from conversation history
@@ -923,7 +927,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     preferences_applied=exclude_allergens,  # Track what allergens were avoided
                     backup_recipes=backup_dict  # Store backups for instant swaps
                 )
-                plan_id = self.assistant.db.save_meal_plan(plan)
+                plan_id = self.assistant.db.save_meal_plan(plan, user_id=self.user_id)
                 self.current_meal_plan_id = plan_id
 
                 # Cache the plan in memory for follow-up questions
@@ -1028,7 +1032,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
             elif tool_name == "get_meal_history":
                 history = self.assistant.db.get_meal_history(
-                    weeks_back=tool_input.get("weeks_back", 4)
+                    user_id=self.user_id, weeks_back=tool_input.get("weeks_back", 4)
                 )
                 if not history:
                     return "No meal history available."
@@ -1043,7 +1047,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     return "No active meal plan. Would you like me to create one?"
 
                 # Load plan from DB and cache it
-                meal_plan = self.assistant.db.get_meal_plan(self.current_meal_plan_id)
+                meal_plan = self.assistant.db.get_meal_plan(self.current_meal_plan_id, user_id=self.user_id)
                 if meal_plan:
                     self.last_meal_plan = meal_plan
                     if self.verbose:
@@ -1051,7 +1055,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
                 # Get explanation from agent
                 explanation = self.assistant.planning_agent.explain_plan(
-                    self.current_meal_plan_id
+                    self.current_meal_plan_id, user_id=self.user_id
                 )
                 return explanation
 
@@ -1164,7 +1168,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 success = self.assistant.db.swap_meal_in_plan(
                     plan_id=self.last_meal_plan.id,
                     date=date,
-                    new_recipe_id=new_recipe.id
+                    new_recipe_id=new_recipe.id,
+                    user_id=self.user_id
                 )
 
                 if not success:
@@ -1235,7 +1240,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 success = self.assistant.db.swap_meal_in_plan(
                     plan_id=self.last_meal_plan.id,
                     date=date,
-                    new_recipe_id=selected_recipe.id
+                    new_recipe_id=selected_recipe.id,
+                    user_id=self.user_id
                 )
 
                 if not success:

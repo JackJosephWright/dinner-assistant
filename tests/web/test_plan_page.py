@@ -10,7 +10,7 @@ import time
 
 
 @pytest.mark.web
-def test_split_screen_layout(page, flask_app):
+def test_split_screen_layout(authenticated_page, flask_app):
     """
     Test that the Plan page has correct split-screen layout.
 
@@ -19,8 +19,7 @@ def test_split_screen_layout(page, flask_app):
     - Plan column on the right
     - Both columns visible simultaneously
     """
-    # Navigate to Plan page
-    page.goto(f"{flask_app}/plan")
+    page = authenticated_page  # Already logged in and on /plan
 
     # Wait for page to load
     page.wait_for_selector(".split-container", timeout=5000)
@@ -49,7 +48,8 @@ def test_split_screen_layout(page, flask_app):
 
 
 @pytest.mark.web
-def test_basic_planning_flow(page, flask_app):
+@pytest.mark.slow  # This test requires LLM API calls (30-60s)
+def test_basic_planning_flow(authenticated_page, flask_app):
     """
     Test basic meal planning workflow.
 
@@ -61,8 +61,7 @@ def test_basic_planning_flow(page, flask_app):
 
     Note: This test may take 30+ seconds due to LLM API calls.
     """
-    # Navigate to Plan page
-    page.goto(f"{flask_app}/plan")
+    page = authenticated_page  # Already logged in and on /plan
     page.wait_for_selector(".split-container", timeout=5000)
 
     # Note: All days start selected by default, so we don't need to click them
@@ -112,7 +111,8 @@ def test_basic_planning_flow(page, flask_app):
 
 
 @pytest.mark.web
-def test_verbose_output_visibility(page, flask_app):
+@pytest.mark.slow  # This test requires LLM API calls (30-60s)
+def test_verbose_output_visibility(authenticated_page, flask_app):
     """
     Test that verbose tool execution details appear in chat.
 
@@ -120,8 +120,7 @@ def test_verbose_output_visibility(page, flask_app):
     - Tool execution messages appear (e.g., "🔧 [TOOL] search_recipes_smart")
     - Verbose messages have correct styling
     """
-    # Navigate to Plan page
-    page.goto(f"{flask_app}/plan")
+    page = authenticated_page  # Already logged in and on /plan
     page.wait_for_selector(".split-container", timeout=5000)
 
     # Select 1 day
@@ -162,7 +161,8 @@ def test_verbose_output_visibility(page, flask_app):
 
 
 @pytest.mark.web
-def test_vague_swap_confirmation(page, flask_app):
+@pytest.mark.slow  # This test requires LLM API calls (60-120s)
+def test_vague_swap_confirmation(authenticated_page, flask_app):
     """
     Test interactive swap confirmation workflow.
 
@@ -175,8 +175,7 @@ def test_vague_swap_confirmation(page, flask_app):
 
     Note: This test requires LLM API and may take 60+ seconds.
     """
-    # Navigate to Plan page
-    page.goto(f"{flask_app}/plan")
+    page = authenticated_page  # Already logged in and on /plan
     page.wait_for_selector(".split-container", timeout=5000)
 
     # Step 1: Create initial plan

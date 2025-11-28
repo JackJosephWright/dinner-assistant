@@ -364,8 +364,9 @@ def restore_session_from_db():
     This handles cases where user returns after closing browser.
     Also updates session to latest plan if a newer one exists.
     """
+    user_id = session.get('user_id', 1)
     # Always get the most recent meal plan and update session if newer
-    recent_plans = assistant.db.get_recent_meal_plans(limit=1)
+    recent_plans = assistant.db.get_recent_meal_plans(user_id=user_id, limit=1)
 
     # If user cleared plan, only show plans created AFTER the clear
     if session.get('plan_cleared'):
@@ -405,8 +406,8 @@ def restore_session_from_db():
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute(
-                        "SELECT id FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
-                        (meal_plan.week_of,)
+                        "SELECT id FROM grocery_lists WHERE week_of = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1",
+                        (meal_plan.week_of, user_id)
                     )
                     row = cursor.fetchone()
                     if row:
@@ -584,7 +585,8 @@ def plan_page():
                 meal_plan = None
             else:
                 log_legacy_fallback("plan_page - no snapshot available")
-                meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+                user_id = session.get('user_id', 1)
+                meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
             if meal_plan:
                 # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
                 enriched_meals = []
@@ -653,17 +655,18 @@ def shop_page():
         if not SNAPSHOTS_ENABLED:
             log_legacy_fallback("shop - snapshots disabled")
 
+        user_id = session.get('user_id', 1)
         if 'meal_plan_id' in session:
             try:
-                meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
+                meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'], user_id=user_id)
                 if meal_plan:
                     # Query for most recent grocery list for this week
                     with sqlite3.connect(assistant.db.user_db) as conn:
                         conn.row_factory = sqlite3.Row
                         cursor = conn.cursor()
                         cursor.execute(
-                            "SELECT id FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
-                            (meal_plan.week_of,)
+                            "SELECT id FROM grocery_lists WHERE week_of = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1",
+                            (meal_plan.week_of, user_id)
                         )
                         row = cursor.fetchone()
                         if row:
@@ -672,7 +675,7 @@ def shop_page():
                             session['shopping_list_id'] = latest_shopping_list_id
                             logger.info(f"Legacy: Loaded latest shopping list: {latest_shopping_list_id}")
 
-                            grocery_list = assistant.db.get_grocery_list(latest_shopping_list_id)
+                            grocery_list = assistant.db.get_grocery_list(latest_shopping_list_id, user_id=user_id)
                             if grocery_list:
                                 current_list = grocery_list.to_dict()
             except Exception as e:
@@ -680,7 +683,7 @@ def shop_page():
         elif 'shopping_list_id' in session:
             # Fallback: use session ID if no meal plan
             try:
-                grocery_list = assistant.db.get_grocery_list(session['shopping_list_id'])
+                grocery_list = assistant.db.get_grocery_list(session['shopping_list_id'], user_id=user_id)
                 if grocery_list:
                     current_list = grocery_list.to_dict()
             except Exception as e:
@@ -747,7 +750,8 @@ def cook_page():
     if current_plan is None and 'meal_plan_id' in session:
         try:
             log_legacy_fallback("cook_page - no snapshot available")
-            meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'])
+            user_id = session.get('user_id', 1)
+            meal_plan = assistant.db.get_meal_plan(session['meal_plan_id'], user_id=user_id)
             if meal_plan:
                 # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
                 enriched_meals = []
@@ -790,10 +794,11 @@ def cook_page():
 @login_required
 def settings_page():
     """Settings page."""
+    user_id = session.get('user_id', 1)
     try:
-        profile = assistant.db.get_user_profile()
-        cuisine_prefs = assistant.db.get_cuisine_preferences()
-        favorite_recipes = assistant.db.get_favorite_recipes(limit=10)
+        profile = assistant.db.get_user_profile(user_id=user_id)
+        cuisine_prefs = assistant.db.get_cuisine_preferences(user_id=user_id)
+        favorite_recipes = assistant.db.get_favorite_recipes(user_id=user_id, limit=10)
 
         return render_template(
             'settings.html',
@@ -844,10 +849,10 @@ def api_plan_meals():
             # Phase 2: Dual-write to snapshots (legacy tables still drive UI)
             if SNAPSHOTS_ENABLED:
                 try:
+                    user_id = session.get('user_id', 1)
                     # Load the MealPlan from database
-                    meal_plan = assistant.db.get_meal_plan(result['meal_plan_id'])
+                    meal_plan = assistant.db.get_meal_plan(result['meal_plan_id'], user_id=user_id)
                     if meal_plan:
-                        user_id = session.get('user_id', 1)
 
                         # Build snapshot dict from MealPlan
                         snapshot = {
@@ -901,7 +906,7 @@ def api_plan_meals():
 
                                 if snapshot:
                                     # Load the grocery list and add to snapshot
-                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id, user_id=user_id)
                                     if grocery_list:
                                         snapshot['grocery_list'] = grocery_list.to_dict()
                                         snapshot['updated_at'] = datetime.now().isoformat()
@@ -961,6 +966,7 @@ def api_swap_meal():
         )
 
         if result.get("success"):
+            user_id = session.get('user_id', 1)
             # Phase 6: Update snapshot after swap
             if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
                 try:
@@ -969,7 +975,7 @@ def api_swap_meal():
 
                     if snapshot:
                         # Load updated meal plan from legacy table
-                        meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+                        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
                         if meal_plan:
                             # Update snapshot's planned_meals with new meal data
                             snapshot['planned_meals'] = [m.to_dict() for m in meal_plan.meals]
@@ -987,8 +993,9 @@ def api_swap_meal():
             })
             logger.info(f"Broadcasted meal_plan_changed event")
 
-            # Capture snapshot_id for background thread
+            # Capture snapshot_id and user_id for background thread
             snapshot_id_for_bg = session.get('snapshot_id') if SNAPSHOTS_ENABLED else None
+            user_id_for_bg = user_id
 
             # Auto-regenerate shopping list in BACKGROUND THREAD
             def regenerate_shopping_list_async():
@@ -1006,7 +1013,7 @@ def api_swap_meal():
                             try:
                                 snapshot = assistant.db.get_snapshot(snapshot_id_for_bg)
                                 if snapshot:
-                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                    grocery_list = assistant.db.get_grocery_list(new_shopping_list_id, user_id=user_id_for_bg)
                                     if grocery_list:
                                         snapshot['grocery_list'] = grocery_list.to_dict()
                                         snapshot['updated_at'] = datetime.now().isoformat()
@@ -1125,10 +1132,12 @@ def api_create_shopping_list():
         if not meal_plan_id:
             return jsonify({"success": False, "error": "No meal plan available"}), 400
 
+        user_id = session.get('user_id', 1)
+
         # Check if already exists (cache check)
         if not scaling_instructions and session.get('shopping_list_id'):
             # Return cached shopping list
-            existing_list = assistant.db.get_grocery_list(session['shopping_list_id'])
+            existing_list = assistant.db.get_grocery_list(session['shopping_list_id'], user_id=user_id)
             if existing_list:
                 logger.info(f"Returning cached shopping list: {session['shopping_list_id']}")
                 return jsonify({
@@ -1154,7 +1163,7 @@ def api_create_shopping_list():
             logger.info(f"Creating shopping list for {meal_plan_id}")
 
             # DEBUG: Check meal plan details
-            meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+            meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
             if meal_plan:
                 logger.debug(f"Meal plan has {len(meal_plan.meals)} meals")
                 for i, meal in enumerate(meal_plan.meals):
@@ -1240,10 +1249,11 @@ def api_search_recipes():
 @login_required
 def api_get_preferences():
     """Get user preferences and stats."""
+    user_id = session.get('user_id', 1)
     try:
-        profile = assistant.db.get_user_profile()
-        cuisine_prefs = assistant.db.get_cuisine_preferences()
-        favorite_recipes = assistant.db.get_favorite_recipes(limit=10)
+        profile = assistant.db.get_user_profile(user_id=user_id)
+        cuisine_prefs = assistant.db.get_cuisine_preferences(user_id=user_id)
+        favorite_recipes = assistant.db.get_favorite_recipes(user_id=user_id, limit=10)
 
         return jsonify({
             "success": True,
@@ -1261,10 +1271,11 @@ def api_get_preferences():
 @login_required
 def api_get_meal_history():
     """Get meal history."""
+    user_id = session.get('user_id', 1)
     try:
         weeks_back = request.args.get('weeks_back', default=4, type=int)
 
-        history = assistant.db.get_meal_history(weeks_back=weeks_back)
+        history = assistant.db.get_meal_history(user_id=user_id, weeks_back=weeks_back)
 
         return jsonify({
             "success": True,
@@ -1381,7 +1392,7 @@ def api_chat():
                     # Phase 2: Create snapshot for chat-generated meal plans
                     if plan_changed and chatbot_instance.current_meal_plan_id and SNAPSHOTS_ENABLED:
                         try:
-                            meal_plan = assistant.db.get_meal_plan(chatbot_instance.current_meal_plan_id)
+                            meal_plan = assistant.db.get_meal_plan(chatbot_instance.current_meal_plan_id, user_id=user_id_for_bg)
                             if meal_plan:
                                 snapshot = {
                                     'id': meal_plan.id,
@@ -1431,7 +1442,7 @@ def api_chat():
                                         try:
                                             snapshot = assistant.db.get_snapshot(snapshot_id_for_bg)
                                             if snapshot:
-                                                grocery_list = assistant.db.get_grocery_list(new_shopping_list_id)
+                                                grocery_list = assistant.db.get_grocery_list(new_shopping_list_id, user_id=user_id_for_bg)
                                                 if grocery_list:
                                                     snapshot['grocery_list'] = grocery_list.to_dict()
                                                     snapshot['updated_at'] = datetime.now().isoformat()
@@ -1489,9 +1500,10 @@ def api_chat():
 @login_required
 def api_onboarding_check():
     """Check if user needs onboarding."""
+    user_id = session.get('user_id', 1)
     try:
-        needs_onboarding = not check_onboarding_status(assistant.db)
-        profile = assistant.db.get_user_profile()
+        needs_onboarding = not check_onboarding_status(assistant.db, user_id=user_id)
+        profile = assistant.db.get_user_profile(user_id=user_id)
 
         return jsonify({
             "success": True,
@@ -1621,7 +1633,8 @@ def api_get_current_plan():
         if not meal_plan_id:
             return jsonify({"success": False, "error": "No active meal plan"}), 404
 
-        meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+        user_id = session.get('user_id', 1)
+        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
         if not meal_plan:
             return jsonify({"success": False, "error": "Meal plan not found"}), 404
 
@@ -1660,8 +1673,9 @@ def api_get_current_plan():
 @login_required
 def api_get_plan_by_id(meal_plan_id):
     """Get meal plan by ID (for cook page and localStorage-based lookups)."""
+    user_id = session.get('user_id', 1)
     try:
-        meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
         if not meal_plan:
             return jsonify({"success": False, "error": "Meal plan not found"}), 404
 
@@ -1704,13 +1718,15 @@ def api_preload_plan_data():
 
         logger.info(f"Preloading data for meal plan {meal_plan_id}")
 
+        user_id = session.get('user_id', 1)
+
         # Priority 1: Create shopping list if it doesn't exist
         shopping_result = None
         if not session.get('shopping_list_id'):
             # Check if a shopping list already exists for this week
-            meal_plan = assistant.db.get_meal_plan(meal_plan_id)
+            meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
             if meal_plan:
-                existing_list = assistant.db.get_grocery_list_by_week(meal_plan.week_of)
+                existing_list = assistant.db.get_grocery_list_by_week(meal_plan.week_of, user_id=user_id)
                 if existing_list:
                     session['shopping_list_id'] = existing_list.id
                     logger.info(f"Found existing shopping list: {existing_list.id}, restoring to session")

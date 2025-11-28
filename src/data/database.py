@@ -234,6 +234,233 @@ class DatabaseInterface:
             conn.commit()
             logger.info("User database initialized")
 
+            # Run multi-user migration
+            self._migrate_to_multi_user(conn)
+
+    def _migrate_to_multi_user(self, conn):
+        """
+        Migrate database tables to support multiple users.
+
+        Adds user_id column to tables that were previously single-user.
+        This migration is idempotent - safe to run multiple times.
+        """
+        cursor = conn.cursor()
+
+        # Check if migration already done by looking for user_id in meal_plans
+        cursor.execute("PRAGMA table_info(meal_plans)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'user_id' in columns:
+            logger.debug("Multi-user migration already complete")
+            return
+
+        logger.info("Starting multi-user migration...")
+
+        # === 1. Migrate meal_plans ===
+        cursor.execute("""
+            CREATE TABLE meal_plans_new (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                week_of TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                preferences_applied TEXT,
+                meals_json TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO meal_plans_new (id, user_id, week_of, created_at, preferences_applied, meals_json)
+            SELECT id, 1, week_of, created_at, preferences_applied, meals_json FROM meal_plans
+        """)
+        cursor.execute("DROP TABLE meal_plans")
+        cursor.execute("ALTER TABLE meal_plans_new RENAME TO meal_plans")
+        cursor.execute("CREATE INDEX idx_meal_plans_user ON meal_plans(user_id)")
+        cursor.execute("CREATE INDEX idx_meal_plans_user_week ON meal_plans(user_id, week_of)")
+
+        # === 2. Migrate meal_history ===
+        cursor.execute("""
+            CREATE TABLE meal_history_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                date TEXT NOT NULL,
+                meal_name TEXT NOT NULL,
+                day_of_week TEXT,
+                meal_type TEXT DEFAULT 'dinner',
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO meal_history_new (id, user_id, date, meal_name, day_of_week, meal_type)
+            SELECT id, 1, date, meal_name, day_of_week, meal_type FROM meal_history
+        """)
+        cursor.execute("DROP TABLE meal_history")
+        cursor.execute("ALTER TABLE meal_history_new RENAME TO meal_history")
+        cursor.execute("CREATE INDEX idx_meal_history_user ON meal_history(user_id)")
+
+        # === 3. Migrate grocery_lists ===
+        cursor.execute("""
+            CREATE TABLE grocery_lists_new (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                week_of TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                estimated_total REAL,
+                items_json TEXT NOT NULL,
+                extra_items_json TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO grocery_lists_new (id, user_id, week_of, created_at, estimated_total, items_json, extra_items_json)
+            SELECT id, 1, week_of, created_at, estimated_total, items_json, extra_items_json FROM grocery_lists
+        """)
+        cursor.execute("DROP TABLE grocery_lists")
+        cursor.execute("ALTER TABLE grocery_lists_new RENAME TO grocery_lists")
+        cursor.execute("CREATE INDEX idx_grocery_lists_user ON grocery_lists(user_id)")
+        cursor.execute("CREATE INDEX idx_grocery_lists_user_week ON grocery_lists(user_id, week_of)")
+
+        # === 4. Migrate shopping_extras ===
+        cursor.execute("""
+            CREATE TABLE shopping_extras_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                week_of TEXT NOT NULL,
+                name TEXT NOT NULL,
+                quantity TEXT,
+                category TEXT,
+                is_checked BOOLEAN DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO shopping_extras_new (id, user_id, week_of, name, quantity, category, is_checked, created_at)
+            SELECT id, 1, week_of, name, quantity, category, is_checked, created_at FROM shopping_extras
+        """)
+        cursor.execute("DROP TABLE shopping_extras")
+        cursor.execute("ALTER TABLE shopping_extras_new RENAME TO shopping_extras")
+        cursor.execute("CREATE INDEX idx_shopping_extras_user_week ON shopping_extras(user_id, week_of)")
+
+        # === 5. Migrate meal_events ===
+        cursor.execute("""
+            CREATE TABLE meal_events_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+
+                date TEXT NOT NULL,
+                day_of_week TEXT NOT NULL,
+                meal_type TEXT DEFAULT 'dinner',
+
+                recipe_id TEXT NOT NULL,
+                recipe_name TEXT NOT NULL,
+                recipe_cuisine TEXT,
+                recipe_difficulty TEXT,
+
+                servings_planned INTEGER,
+                servings_actual INTEGER,
+                ingredients_snapshot TEXT,
+                modifications TEXT,
+                substitutions TEXT,
+
+                user_rating INTEGER,
+                cooking_time_actual INTEGER,
+                notes TEXT,
+                would_make_again BOOLEAN,
+
+                meal_plan_id TEXT,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (meal_plan_id) REFERENCES meal_plans(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO meal_events_new
+            SELECT id, 1, date, day_of_week, meal_type, recipe_id, recipe_name,
+                   recipe_cuisine, recipe_difficulty, servings_planned, servings_actual,
+                   ingredients_snapshot, modifications, substitutions, user_rating,
+                   cooking_time_actual, notes, would_make_again, meal_plan_id, created_at
+            FROM meal_events
+        """)
+        cursor.execute("DROP TABLE meal_events")
+        cursor.execute("ALTER TABLE meal_events_new RENAME TO meal_events")
+        cursor.execute("CREATE INDEX idx_meal_events_user ON meal_events(user_id)")
+        cursor.execute("CREATE INDEX idx_meal_events_user_date ON meal_events(user_id, date)")
+        cursor.execute("CREATE INDEX idx_meal_events_date ON meal_events(date)")
+        cursor.execute("CREATE INDEX idx_meal_events_recipe ON meal_events(recipe_id)")
+        cursor.execute("CREATE INDEX idx_meal_events_plan ON meal_events(meal_plan_id)")
+        cursor.execute("CREATE UNIQUE INDEX idx_meal_events_user_date_type ON meal_events(user_id, date, meal_type)")
+
+        # === 6. Migrate user_profile ===
+        # Remove the CHECK (id = 1) constraint and add user_id
+        cursor.execute("""
+            CREATE TABLE user_profile_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+
+                household_size INTEGER DEFAULT 4,
+                cooking_for TEXT,
+
+                dietary_restrictions TEXT,
+                allergens TEXT,
+
+                favorite_cuisines TEXT,
+                disliked_ingredients TEXT,
+                preferred_proteins TEXT,
+                spice_tolerance TEXT DEFAULT 'medium',
+
+                max_weeknight_cooking_time INTEGER DEFAULT 45,
+                max_weekend_cooking_time INTEGER DEFAULT 90,
+                budget_per_week REAL,
+
+                variety_preference TEXT DEFAULT 'high',
+                health_focus TEXT,
+
+                onboarding_completed BOOLEAN DEFAULT FALSE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO user_profile_new
+            (id, user_id, household_size, cooking_for, dietary_restrictions, allergens,
+             favorite_cuisines, disliked_ingredients, preferred_proteins, spice_tolerance,
+             max_weeknight_cooking_time, max_weekend_cooking_time, budget_per_week,
+             variety_preference, health_focus, onboarding_completed, created_at, updated_at)
+            SELECT id, 1, household_size, cooking_for, dietary_restrictions, allergens,
+                   favorite_cuisines, disliked_ingredients, preferred_proteins, spice_tolerance,
+                   max_weeknight_cooking_time, max_weekend_cooking_time, budget_per_week,
+                   variety_preference, health_focus, onboarding_completed, created_at, updated_at
+            FROM user_profile
+        """)
+        cursor.execute("DROP TABLE user_profile")
+        cursor.execute("ALTER TABLE user_profile_new RENAME TO user_profile")
+        cursor.execute("CREATE INDEX idx_user_profile_user ON user_profile(user_id)")
+
+        # === 7. Migrate user_preferences (key-value store needs user scoping) ===
+        cursor.execute("""
+            CREATE TABLE user_preferences_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, key),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO user_preferences_new (user_id, key, value, updated_at)
+            SELECT 1, key, value, updated_at FROM user_preferences
+        """)
+        cursor.execute("DROP TABLE user_preferences")
+        cursor.execute("ALTER TABLE user_preferences_new RENAME TO user_preferences")
+        cursor.execute("CREATE INDEX idx_user_preferences_user ON user_preferences(user_id)")
+
+        conn.commit()
+        logger.info("Multi-user migration complete")
+
     # ==================== Recipe Operations ====================
 
     def search_recipes(
@@ -367,7 +594,7 @@ class DatabaseInterface:
 
     # ==================== Meal Plan Operations ====================
 
-    def save_meal_plan(self, meal_plan: MealPlan) -> str:
+    def save_meal_plan(self, meal_plan: MealPlan, user_id: int = 1) -> str:
         """
         Save a meal plan to the database.
 
@@ -378,6 +605,7 @@ class DatabaseInterface:
 
         Args:
             meal_plan: MealPlan object
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             ID of saved meal plan
@@ -399,11 +627,12 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO meal_plans
-                (id, week_of, created_at, preferences_applied, meals_json)
-                VALUES (?, ?, ?, ?, ?)
+                (id, user_id, week_of, created_at, preferences_applied, meals_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meal_plan.id,
+                    user_id,
                     meal_plan.week_of,
                     meal_plan.created_at.isoformat(),
                     json.dumps(meal_plan.preferences_applied),
@@ -418,17 +647,17 @@ class DatabaseInterface:
                 meal_date = datetime.fromisoformat(meal.date)
                 day_of_week = meal_date.strftime("%A")
 
-                # UPSERT: Insert or update if (date, meal_type) already exists
+                # UPSERT: Insert or update if (user_id, date, meal_type) already exists
                 cursor.execute("""
                     INSERT INTO meal_events (
-                        date, day_of_week, meal_type,
+                        user_id, date, day_of_week, meal_type,
                         recipe_id, recipe_name, recipe_cuisine, recipe_difficulty,
                         servings_planned,
                         ingredients_snapshot,
                         meal_plan_id,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(date, meal_type) DO UPDATE SET
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, date, meal_type) DO UPDATE SET
                         recipe_id = excluded.recipe_id,
                         recipe_name = excluded.recipe_name,
                         recipe_cuisine = excluded.recipe_cuisine,
@@ -437,6 +666,7 @@ class DatabaseInterface:
                         ingredients_snapshot = excluded.ingredients_snapshot,
                         meal_plan_id = excluded.meal_plan_id
                 """, (
+                    user_id,
                     meal.date,
                     day_of_week,
                     'dinner',  # Default meal type
@@ -455,12 +685,13 @@ class DatabaseInterface:
         logger.info(f"Saved meal plan {meal_plan.id} with {len(meal_plan.meals)} meal events")
         return meal_plan.id
 
-    def get_meal_plan(self, plan_id: str) -> Optional[MealPlan]:
+    def get_meal_plan(self, plan_id: str, user_id: int = None) -> Optional[MealPlan]:
         """
         Get a meal plan by ID.
 
         Args:
             plan_id: Meal plan ID
+            user_id: Optional user ID filter (for security)
 
         Returns:
             MealPlan object or None
@@ -469,7 +700,10 @@ class DatabaseInterface:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM meal_plans WHERE id = ?", (plan_id,))
+            if user_id is not None:
+                cursor.execute("SELECT * FROM meal_plans WHERE id = ? AND user_id = ?", (plan_id, user_id))
+            else:
+                cursor.execute("SELECT * FROM meal_plans WHERE id = ?", (plan_id,))
             row = cursor.fetchone()
 
             if row:
@@ -482,11 +716,12 @@ class DatabaseInterface:
                 )
             return None
 
-    def get_recent_meal_plans(self, limit: int = 10) -> List[MealPlan]:
+    def get_recent_meal_plans(self, user_id: int = 1, limit: int = 10) -> List[MealPlan]:
         """
-        Get recent meal plans.
+        Get recent meal plans for a user.
 
         Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
             limit: Maximum number of plans to return
 
         Returns:
@@ -497,8 +732,8 @@ class DatabaseInterface:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT * FROM meal_plans ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM meal_plans WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
             )
             rows = cursor.fetchall()
 
@@ -514,7 +749,7 @@ class DatabaseInterface:
             ]
 
     def swap_meal_in_plan(
-        self, plan_id: str, date: str, new_recipe_id: str
+        self, plan_id: str, date: str, new_recipe_id: str, user_id: int = 1
     ) -> Optional[MealPlan]:
         """
         Swap a meal in an existing meal plan.
@@ -528,6 +763,7 @@ class DatabaseInterface:
             plan_id: Meal plan ID
             date: Date of meal to swap (YYYY-MM-DD)
             new_recipe_id: New recipe ID
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Updated MealPlan object or None if not found
@@ -541,7 +777,7 @@ class DatabaseInterface:
         )
 
         # Get the meal plan
-        meal_plan = self.get_meal_plan(plan_id)
+        meal_plan = self.get_meal_plan(plan_id, user_id=user_id)
         if not meal_plan:
             return None
 
@@ -569,11 +805,11 @@ class DatabaseInterface:
             return None
 
         # Save updated plan
-        self.save_meal_plan(meal_plan)
+        self.save_meal_plan(meal_plan, user_id=user_id)
         logger.info(f"Swapped meal on {date} in plan {plan_id} to {new_recipe.name}")
 
         # Update grocery list incrementally (if one exists)
-        grocery_list = self.get_grocery_list_by_week(meal_plan.week_of)
+        grocery_list = self.get_grocery_list_by_week(meal_plan.week_of, user_id=user_id)
         if grocery_list and old_recipe:
             # Remove old recipe ingredients
             grocery_list.remove_recipe_ingredients(old_recipe.name)
@@ -584,18 +820,19 @@ class DatabaseInterface:
             logger.info(f"Added ingredients for '{new_recipe.name}' to shopping list")
 
             # Save updated grocery list
-            self.save_grocery_list(grocery_list)
+            self.save_grocery_list(grocery_list, user_id=user_id)
             logger.info(f"Updated grocery list {grocery_list.id} incrementally")
 
         return meal_plan
 
     # ==================== Meal History Operations ====================
 
-    def get_meal_history(self, weeks_back: int = 8) -> List[PlannedMeal]:
+    def get_meal_history(self, user_id: int = 1, weeks_back: int = 8) -> List[PlannedMeal]:
         """
-        Get meal history from the past N weeks.
+        Get meal history from the past N weeks for a user.
 
         Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
             weeks_back: Number of weeks to look back
 
         Returns:
@@ -608,10 +845,11 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 SELECT * FROM meal_history
+                WHERE user_id = ?
                 ORDER BY date DESC
                 LIMIT ?
                 """,
-                (weeks_back * 7,),
+                (user_id, weeks_back * 7),
             )
             rows = cursor.fetchall()
 
@@ -644,24 +882,24 @@ class DatabaseInterface:
             return meals
 
     def add_meal_to_history(
-        self, date: str, meal_name: str, day_of_week: str, meal_type: str = "dinner"
+        self, date: str, meal_name: str, day_of_week: str, meal_type: str = "dinner", user_id: int = 1
     ):
-        """Add a meal to the history."""
+        """Add a meal to the history for a user."""
         with sqlite3.connect(self.user_db) as conn:
             cursor = conn.cursor()
 
             cursor.execute(
                 """
-                INSERT INTO meal_history (date, meal_name, day_of_week, meal_type)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO meal_history (user_id, date, meal_name, day_of_week, meal_type)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (date, meal_name, day_of_week, meal_type),
+                (user_id, date, meal_name, day_of_week, meal_type),
             )
             conn.commit()
 
     # ==================== Grocery List Operations ====================
 
-    def save_grocery_list(self, grocery_list: GroceryList) -> str:
+    def save_grocery_list(self, grocery_list: GroceryList, user_id: int = 1) -> str:
         """
         Save a grocery list to the database.
 
@@ -672,6 +910,7 @@ class DatabaseInterface:
 
         Args:
             grocery_list: GroceryList object
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             ID of saved grocery list
@@ -693,11 +932,12 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO grocery_lists
-                (id, week_of, created_at, estimated_total, items_json, extra_items_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (id, user_id, week_of, created_at, estimated_total, items_json, extra_items_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     grocery_list.id,
+                    user_id,
                     grocery_list.week_of,
                     grocery_list.created_at.isoformat(),
                     grocery_list.estimated_total,
@@ -710,13 +950,16 @@ class DatabaseInterface:
         logger.info(f"Saved grocery list {grocery_list.id}")
         return grocery_list.id
 
-    def get_grocery_list(self, list_id: str) -> Optional[GroceryList]:
-        """Get a grocery list by ID."""
+    def get_grocery_list(self, list_id: str, user_id: int = None) -> Optional[GroceryList]:
+        """Get a grocery list by ID, optionally filtered by user."""
         with sqlite3.connect(self.user_db) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM grocery_lists WHERE id = ?", (list_id,))
+            if user_id is not None:
+                cursor.execute("SELECT * FROM grocery_lists WHERE id = ? AND user_id = ?", (list_id, user_id))
+            else:
+                cursor.execute("SELECT * FROM grocery_lists WHERE id = ?", (list_id,))
             row = cursor.fetchone()
 
             if row:
@@ -735,12 +978,13 @@ class DatabaseInterface:
                 )
             return None
 
-    def get_grocery_list_by_week(self, week_of: str) -> Optional[GroceryList]:
+    def get_grocery_list_by_week(self, week_of: str, user_id: int = 1) -> Optional[GroceryList]:
         """
-        Get a grocery list by week_of date.
+        Get a grocery list by week_of date for a user.
 
         Args:
             week_of: Week start date (YYYY-MM-DD)
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             GroceryList object or None if not found
@@ -750,8 +994,8 @@ class DatabaseInterface:
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT * FROM grocery_lists WHERE week_of = ? ORDER BY created_at DESC LIMIT 1",
-                (week_of,)
+                "SELECT * FROM grocery_lists WHERE week_of = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (week_of, user_id)
             )
             row = cursor.fetchone()
 
@@ -771,7 +1015,7 @@ class DatabaseInterface:
                 )
             return None
 
-    def get_grocery_list_by_meal_plan(self, meal_plan_id: str) -> Optional[GroceryList]:
+    def get_grocery_list_by_meal_plan(self, meal_plan_id: str, user_id: int = 1) -> Optional[GroceryList]:
         """
         Get the most recent grocery list for a meal plan.
 
@@ -780,6 +1024,7 @@ class DatabaseInterface:
 
         Args:
             meal_plan_id: Meal plan ID
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             GroceryList object or None if not found
@@ -789,7 +1034,7 @@ class DatabaseInterface:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT week_of FROM meal_plans WHERE id = ?", (meal_plan_id,))
+            cursor.execute("SELECT week_of FROM meal_plans WHERE id = ? AND user_id = ?", (meal_plan_id, user_id))
             row = cursor.fetchone()
 
             if not row:
@@ -798,48 +1043,49 @@ class DatabaseInterface:
             week_of = row["week_of"]
 
         # Now get the grocery list for that week
-        return self.get_grocery_list_by_week(week_of)
+        return self.get_grocery_list_by_week(week_of, user_id=user_id)
 
     # ==================== Preferences Operations ====================
 
-    def get_preference(self, key: str) -> Optional[str]:
-        """Get a user preference by key."""
+    def get_preference(self, key: str, user_id: int = 1) -> Optional[str]:
+        """Get a user preference by key for a user."""
         with sqlite3.connect(self.user_db) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT value FROM user_preferences WHERE key = ?", (key,))
+            cursor.execute("SELECT value FROM user_preferences WHERE key = ? AND user_id = ?", (key, user_id))
             row = cursor.fetchone()
             return row[0] if row else None
 
-    def set_preference(self, key: str, value: str):
-        """Set a user preference."""
+    def set_preference(self, key: str, value: str, user_id: int = 1):
+        """Set a user preference for a user."""
         with sqlite3.connect(self.user_db) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO user_preferences (key, value, updated_at)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO user_preferences (user_id, key, value, updated_at)
+                VALUES (?, ?, ?, ?)
                 """,
-                (key, value, datetime.now().isoformat()),
+                (user_id, key, value, datetime.now().isoformat()),
             )
             conn.commit()
 
-    def get_all_preferences(self) -> Dict[str, str]:
-        """Get all user preferences."""
+    def get_all_preferences(self, user_id: int = 1) -> Dict[str, str]:
+        """Get all preferences for a user."""
         with sqlite3.connect(self.user_db) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT key, value FROM user_preferences")
+            cursor.execute("SELECT key, value FROM user_preferences WHERE user_id = ?", (user_id,))
             rows = cursor.fetchall()
             return {row["key"]: row["value"] for row in rows}
 
     # ==================== Meal Events Operations ====================
 
-    def add_meal_event(self, event: MealEvent) -> int:
+    def add_meal_event(self, event: MealEvent, user_id: int = 1) -> int:
         """
         Add a new meal event to the database.
 
         Args:
             event: MealEvent object
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             ID of created event
@@ -850,14 +1096,15 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 INSERT INTO meal_events
-                (date, day_of_week, meal_type, recipe_id, recipe_name,
+                (user_id, date, day_of_week, meal_type, recipe_id, recipe_name,
                  recipe_cuisine, recipe_difficulty, servings_planned,
                  servings_actual, ingredients_snapshot, modifications,
                  substitutions, user_rating, cooking_time_actual,
                  notes, would_make_again, meal_plan_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    user_id,
                     event.date,
                     event.day_of_week,
                     event.meal_type,
@@ -919,11 +1166,12 @@ class DatabaseInterface:
         logger.info(f"Updated meal event {event_id}")
         return True
 
-    def get_meal_events(self, weeks_back: int = 8) -> List[MealEvent]:
+    def get_meal_events(self, user_id: int = 1, weeks_back: int = 8) -> List[MealEvent]:
         """
-        Get meal events from the past N weeks.
+        Get meal events from the past N weeks for a user.
 
         Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
             weeks_back: Number of weeks to look back
 
         Returns:
@@ -936,10 +1184,10 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 SELECT * FROM meal_events
-                WHERE date >= date('now', '-' || ? || ' days')
+                WHERE user_id = ? AND date >= date('now', '-' || ? || ' days')
                 ORDER BY date DESC
                 """,
-                (weeks_back * 7,),
+                (user_id, weeks_back * 7),
             )
             rows = cursor.fetchall()
 
@@ -971,11 +1219,12 @@ class DatabaseInterface:
 
             return events
 
-    def get_favorite_recipes(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_favorite_recipes(self, user_id: int = 1, limit: int = 20) -> List[Dict[str, Any]]:
         """
         Get user's favorite recipes based on ratings and frequency.
 
         Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
             limit: Maximum number of recipes to return
 
         Returns:
@@ -991,12 +1240,12 @@ class DatabaseInterface:
                        AVG(user_rating) as avg_rating,
                        COUNT(*) as times_cooked
                 FROM meal_events
-                WHERE user_rating IS NOT NULL
+                WHERE user_id = ? AND user_rating IS NOT NULL
                 GROUP BY recipe_id
                 ORDER BY avg_rating DESC, times_cooked DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (user_id, limit),
             )
             rows = cursor.fetchall()
 
@@ -1010,11 +1259,12 @@ class DatabaseInterface:
                 for row in rows
             ]
 
-    def get_recent_meals(self, days_back: int = 14) -> List[MealEvent]:
+    def get_recent_meals(self, user_id: int = 1, days_back: int = 14) -> List[MealEvent]:
         """
         Get meals from the past N days for variety enforcement.
 
         Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
             days_back: Number of days to look back
 
         Returns:
@@ -1027,10 +1277,10 @@ class DatabaseInterface:
             cursor.execute(
                 """
                 SELECT * FROM meal_events
-                WHERE date >= date('now', '-' || ? || ' days')
+                WHERE user_id = ? AND date >= date('now', '-' || ? || ' days')
                 ORDER BY date DESC
                 """,
-                (days_back,),
+                (user_id, days_back),
             )
             rows = cursor.fetchall()
 
@@ -1062,9 +1312,12 @@ class DatabaseInterface:
 
             return events
 
-    def get_cuisine_preferences(self) -> Dict[str, Dict[str, Any]]:
+    def get_cuisine_preferences(self, user_id: int = 1) -> Dict[str, Dict[str, Any]]:
         """
         Get user's cuisine preferences based on frequency and ratings.
+
+        Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Dictionary mapping cuisine to stats (frequency, avg_rating)
@@ -1079,10 +1332,11 @@ class DatabaseInterface:
                        COUNT(*) as frequency,
                        AVG(user_rating) as avg_rating
                 FROM meal_events
-                WHERE recipe_cuisine IS NOT NULL
+                WHERE user_id = ? AND recipe_cuisine IS NOT NULL
                 GROUP BY recipe_cuisine
                 ORDER BY frequency DESC, avg_rating DESC
-                """
+                """,
+                (user_id,)
             )
             rows = cursor.fetchall()
 
@@ -1096,9 +1350,12 @@ class DatabaseInterface:
 
     # ==================== User Profile Operations ====================
 
-    def get_user_profile(self) -> Optional[UserProfile]:
+    def get_user_profile(self, user_id: int = 1) -> Optional[UserProfile]:
         """
-        Get the user profile (single row).
+        Get the user profile for a user.
+
+        Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             UserProfile object or None if not set
@@ -1107,7 +1364,7 @@ class DatabaseInterface:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            cursor.execute("SELECT * FROM user_profile WHERE id = 1")
+            cursor.execute("SELECT * FROM user_profile WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
 
             if row:
@@ -1132,12 +1389,13 @@ class DatabaseInterface:
                 )
             return None
 
-    def save_user_profile(self, profile: UserProfile) -> bool:
+    def save_user_profile(self, profile: UserProfile, user_id: int = 1) -> bool:
         """
         Save or update the user profile.
 
         Args:
             profile: UserProfile object
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             True if successful
@@ -1147,8 +1405,8 @@ class DatabaseInterface:
         with sqlite3.connect(self.user_db) as conn:
             cursor = conn.cursor()
 
-            # Check if profile exists
-            cursor.execute("SELECT id FROM user_profile WHERE id = 1")
+            # Check if profile exists for this user
+            cursor.execute("SELECT id FROM user_profile WHERE user_id = ?", (user_id,))
             exists = cursor.fetchone() is not None
 
             if exists:
@@ -1170,7 +1428,7 @@ class DatabaseInterface:
                         health_focus = ?,
                         onboarding_completed = ?,
                         updated_at = ?
-                    WHERE id = 1
+                    WHERE user_id = ?
                     """,
                     (
                         profile.household_size,
@@ -1188,21 +1446,23 @@ class DatabaseInterface:
                         profile.health_focus,
                         profile.onboarding_completed,
                         profile.updated_at.isoformat(),
+                        user_id,
                     ),
                 )
             else:
                 cursor.execute(
                     """
                     INSERT INTO user_profile
-                    (id, household_size, cooking_for, dietary_restrictions,
+                    (user_id, household_size, cooking_for, dietary_restrictions,
                      allergens, favorite_cuisines, disliked_ingredients,
                      preferred_proteins, spice_tolerance,
                      max_weeknight_cooking_time, max_weekend_cooking_time,
                      budget_per_week, variety_preference, health_focus,
                      onboarding_completed, created_at, updated_at)
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        user_id,
                         profile.household_size,
                         json.dumps(profile.cooking_for),
                         json.dumps(profile.dietary_restrictions),
@@ -1223,17 +1483,20 @@ class DatabaseInterface:
                 )
             conn.commit()
 
-        logger.info("Saved user profile")
+        logger.info(f"Saved user profile for user {user_id}")
         return True
 
-    def is_onboarded(self) -> bool:
+    def is_onboarded(self, user_id: int = 1) -> bool:
         """
         Check if user has completed onboarding.
+
+        Args:
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             True if onboarding is complete
         """
-        profile = self.get_user_profile()
+        profile = self.get_user_profile(user_id=user_id)
         return profile.onboarding_completed if profile else False
 
     # ==================== Cooking Guides Cache ====================

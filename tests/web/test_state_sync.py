@@ -110,9 +110,13 @@ class TestStateStreamEndpoint:
 
     @pytest.fixture
     def client(self):
-        """Flask test client."""
+        """Flask test client with authentication."""
         app.config['TESTING'] = True
         with app.test_client() as client:
+            # Set up authenticated session
+            with client.session_transaction() as sess:
+                sess['user_id'] = 1  # Required for @login_required
+                sess['username'] = 'test_user'  # Required for @login_required
             yield client
 
     def test_state_stream_connection(self, client):

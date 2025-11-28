@@ -26,6 +26,8 @@ class TestShoppingListInvalidation:
     def authenticated_session(self, client):
         """Client with authenticated session containing meal plan and shopping list."""
         with client.session_transaction() as sess:
+            sess['user_id'] = 1  # Required for @login_required
+            sess['username'] = 'test_user'  # Required for @login_required
             sess['meal_plan_id'] = 'mp_test_123'
             sess['shopping_list_id'] = 'sl_old_456'
             sess['week_of'] = '2025-11-04'  # Monday
@@ -52,7 +54,7 @@ class TestShoppingListInvalidation:
         response = client.post('/api/swap-meal', json={
             'meal_plan_id': 'mp_test_123',
             'date': '2025-11-04',  # Monday
-            'instructions': 'swap for chicken recipe'
+            'requirements': 'swap for chicken recipe'
         })
 
         # Response should succeed
@@ -108,6 +110,8 @@ class TestShoppingListInvalidation:
         """
         # Setup session with meal plan but no shopping list
         with client.session_transaction() as sess:
+            sess['user_id'] = 1  # Required for @login_required
+            sess['username'] = 'test_user'  # Required for @login_required
             sess['meal_plan_id'] = 'mp_test_789'
             # No shopping_list_id
 
@@ -210,6 +214,8 @@ class TestEdgeCases:
         """
         # Setup - meal plan but no shopping list
         with client.session_transaction() as sess:
+            sess['user_id'] = 1  # Required for @login_required
+            sess['username'] = 'test_user'  # Required for @login_required
             sess['meal_plan_id'] = 'mp_no_shop'
             # No shopping_list_id
 
@@ -217,7 +223,7 @@ class TestEdgeCases:
         response = client.post('/api/swap-meal', json={
             'meal_plan_id': 'mp_no_shop',
             'date': '2025-11-04',
-            'instructions': 'swap for something else'
+            'requirements': 'swap for something else'
         })
 
         # Should not error (might fail for other reasons like no recipes)
@@ -248,6 +254,8 @@ class TestEdgeCases:
         3. No errors should occur
         """
         with client.session_transaction() as sess:
+            sess['user_id'] = 1  # Required for @login_required
+            sess['username'] = 'test_user'  # Required for @login_required
             sess['meal_plan_id'] = 'mp_rapid_swap'
             sess['shopping_list_id'] = 'sl_initial'
 
@@ -257,7 +265,7 @@ class TestEdgeCases:
             response = client.post('/api/swap-meal', json={
                 'meal_plan_id': 'mp_rapid_swap',
                 'date': date,
-                'instructions': 'swap for chicken'
+                'requirements': 'swap for chicken'
             })
             # Each should succeed or fail gracefully
             assert response.status_code in [200, 400, 500]

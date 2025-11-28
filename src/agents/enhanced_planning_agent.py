@@ -41,6 +41,7 @@ class EnhancedPlanningAgent:
         week_of: str,
         num_days: int = 7,
         preferences: Optional[Dict[str, Any]] = None,
+        user_id: int = 1,
     ) -> Dict[str, Any]:
         """
         Generate a meal plan for a week.
@@ -49,6 +50,7 @@ class EnhancedPlanningAgent:
             week_of: ISO date string for Monday (e.g., "2025-01-20")
             num_days: Number of days to plan (default: 7)
             preferences: Optional preferences override
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Dictionary with meal plan results
@@ -56,13 +58,13 @@ class EnhancedPlanningAgent:
         try:
             # Load preferences
             if preferences is None:
-                preferences = self._get_preferences()
+                preferences = self._get_preferences(user_id=user_id)
 
             # Analyze meal history
-            history_analysis = self._analyze_history()
+            history_analysis = self._analyze_history(user_id=user_id)
 
             # Get recently used recipes to avoid
-            recent_names = self._get_recent_recipe_names(weeks_back=2)
+            recent_names = self._get_recent_recipe_names(weeks_back=2, user_id=user_id)
 
             # Generate meal selections
             meals = self._generate_meals(
@@ -80,7 +82,7 @@ class EnhancedPlanningAgent:
                 preferences_applied=list(preferences.keys()),
             )
 
-            plan_id = self.db.save_meal_plan(meal_plan)
+            plan_id = self.db.save_meal_plan(meal_plan, user_id=user_id)
 
             logger.info(f"Generated meal plan {plan_id} with {len(meals)} meals")
 
@@ -107,9 +109,9 @@ class EnhancedPlanningAgent:
                 "error": str(e),
             }
 
-    def _get_preferences(self) -> Dict[str, Any]:
+    def _get_preferences(self, user_id: int = 1) -> Dict[str, Any]:
         """Load user preferences."""
-        prefs = self.db.get_all_preferences()
+        prefs = self.db.get_all_preferences(user_id=user_id)
 
         # Default preferences
         defaults = {
@@ -133,9 +135,9 @@ class EnhancedPlanningAgent:
 
         return defaults
 
-    def _analyze_history(self) -> Dict[str, Any]:
+    def _analyze_history(self, user_id: int = 1) -> Dict[str, Any]:
         """Analyze meal history to extract patterns."""
-        history = self.db.get_meal_history(weeks_back=8)
+        history = self.db.get_meal_history(user_id=user_id, weeks_back=8)
 
         if not history:
             return {
@@ -167,9 +169,9 @@ class EnhancedPlanningAgent:
             "total_meals": len(history),
         }
 
-    def _get_recent_recipe_names(self, weeks_back: int = 2) -> Set[str]:
+    def _get_recent_recipe_names(self, weeks_back: int = 2, user_id: int = 1) -> Set[str]:
         """Get recipe names from recent history to avoid repetition."""
-        history = self.db.get_meal_history(weeks_back=weeks_back)
+        history = self.db.get_meal_history(user_id=user_id, weeks_back=weeks_back)
         return {m.recipe_name.lower() for m in history}
 
     def _generate_meals(
@@ -310,17 +312,18 @@ class EnhancedPlanningAgent:
 
         return meals
 
-    def explain_plan(self, meal_plan_id: str) -> str:
+    def explain_plan(self, meal_plan_id: str, user_id: int = 1) -> str:
         """
         Generate a human-readable explanation of a meal plan.
 
         Args:
             meal_plan_id: ID of saved meal plan
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Explanation text
         """
-        plan = self.db.get_meal_plan(meal_plan_id)
+        plan = self.db.get_meal_plan(meal_plan_id, user_id=user_id)
 
         if not plan:
             return "Meal plan not found."

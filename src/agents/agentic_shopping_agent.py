@@ -30,6 +30,7 @@ class ShoppingState(TypedDict):
     """State for the shopping agent."""
     meal_plan_id: str
     week_of: str
+    user_id: int  # User ID for multi-user support
 
     # Collected ingredients
     raw_ingredients: List[Dict[str, Any]]  # List of {ingredient: str, recipe: str}
@@ -97,7 +98,8 @@ class AgenticShoppingAgent:
     def create_grocery_list(
         self,
         meal_plan_id: str,
-        scaling_instructions: Optional[str] = None
+        scaling_instructions: Optional[str] = None,
+        user_id: int = 1,
     ) -> Dict[str, Any]:
         """
         Create a grocery list from a meal plan using LLM reasoning.
@@ -106,13 +108,14 @@ class AgenticShoppingAgent:
             meal_plan_id: ID of the meal plan
             scaling_instructions: Optional natural language instructions for scaling
                                  specific recipes (e.g., "double the Italian sandwiches")
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Dictionary with grocery list results
         """
         try:
             # Get meal plan to get week_of
-            meal_plan = self.db.get_meal_plan(meal_plan_id)
+            meal_plan = self.db.get_meal_plan(meal_plan_id, user_id=user_id)
             if not meal_plan:
                 return {
                     "success": False,
@@ -123,6 +126,7 @@ class AgenticShoppingAgent:
             initial_state = ShoppingState(
                 meal_plan_id=meal_plan_id,
                 week_of=meal_plan.week_of,
+                user_id=user_id,
                 raw_ingredients=[],
                 consolidated_items=[],
                 grocery_list_id=None,
@@ -141,7 +145,7 @@ class AgenticShoppingAgent:
                 }
 
             # Get the saved grocery list for full details
-            grocery_list = self.db.get_grocery_list(final_state["grocery_list_id"])
+            grocery_list = self.db.get_grocery_list(final_state["grocery_list_id"], user_id=user_id)
 
             logger.info(f"Created grocery list {final_state['grocery_list_id']} with {len(final_state['consolidated_items'])} items using LLM")
 
@@ -168,7 +172,8 @@ class AgenticShoppingAgent:
         LangGraph node: Collect all ingredients from meal plan recipes.
         """
         try:
-            meal_plan = self.db.get_meal_plan(state["meal_plan_id"])
+            user_id = state["user_id"]
+            meal_plan = self.db.get_meal_plan(state["meal_plan_id"], user_id=user_id)
             if not meal_plan:
                 state["error"] = "Meal plan not found"
                 return state
@@ -332,6 +337,7 @@ onions | 2 medium | produce | Stir Fry, Pasta"""
         LangGraph node: Save the consolidated grocery list to database.
         """
         try:
+            user_id = state["user_id"]
             consolidated_items = state["consolidated_items"]
 
             if not consolidated_items:
@@ -363,7 +369,7 @@ onions | 2 medium | produce | Stir Fry, Pasta"""
             )
 
             # Save to database
-            list_id = self.db.save_grocery_list(grocery_list)
+            list_id = self.db.save_grocery_list(grocery_list, user_id=user_id)
 
             state["grocery_list_id"] = list_id
             logger.info(f"Saved grocery list {list_id} with {len(grocery_items)} items")
@@ -375,17 +381,18 @@ onions | 2 medium | produce | Stir Fry, Pasta"""
             state["error"] = f"Save failed: {str(e)}"
             return state
 
-    def format_shopping_list(self, grocery_list_id: str) -> str:
+    def format_shopping_list(self, grocery_list_id: str, user_id: int = 1) -> str:
         """
         Format a grocery list for display using LLM for friendly presentation.
 
         Args:
             grocery_list_id: ID of the grocery list
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Formatted shopping list string
         """
-        grocery_list = self.db.get_grocery_list(grocery_list_id)
+        grocery_list = self.db.get_grocery_list(grocery_list_id, user_id=user_id)
 
         if not grocery_list:
             return "Grocery list not found."

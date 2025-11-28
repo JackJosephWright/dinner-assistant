@@ -477,17 +477,18 @@ What would you like to do first?
             return False, self._summary_and_confirm() + "\n\nPlease type 'yes', 'no', or 'edit'."
 
 
-def check_onboarding_status(db: DatabaseInterface) -> bool:
+def check_onboarding_status(db: DatabaseInterface, user_id: int = 1) -> bool:
     """
     Check if user needs onboarding.
 
     Args:
         db: Database interface
+        user_id: User ID (defaults to 1 for backward compatibility)
 
     Returns:
         True if onboarding is complete
     """
-    return db.is_onboarded()
+    return db.is_onboarded(user_id=user_id)
 
 
 def run_onboarding(db: DatabaseInterface) -> OnboardingFlow:

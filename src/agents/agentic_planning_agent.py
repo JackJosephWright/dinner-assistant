@@ -32,6 +32,7 @@ class PlanningState(TypedDict):
     week_of: str
     num_days: int
     preferences: Dict[str, Any]
+    user_id: int  # User ID for multi-user support
 
     # Analysis results
     history_summary: Optional[str]
@@ -112,6 +113,7 @@ class AgenticPlanningAgent:
         week_of: str,
         num_days: int = 7,
         preferences: Optional[Dict[str, Any]] = None,
+        user_id: int = 1,
     ) -> Dict[str, Any]:
         """
         Generate a meal plan for a week using LLM reasoning.
@@ -120,6 +122,7 @@ class AgenticPlanningAgent:
             week_of: ISO date string for Monday (e.g., "2025-01-20")
             num_days: Number of days to plan (default: 7)
             preferences: Optional preferences override
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Dictionary with meal plan results
@@ -127,13 +130,14 @@ class AgenticPlanningAgent:
         try:
             # Load preferences
             if preferences is None:
-                preferences = self._get_preferences()
+                preferences = self._get_preferences(user_id=user_id)
 
             # Initialize state
             initial_state = PlanningState(
                 week_of=week_of,
                 num_days=num_days,
                 preferences=preferences,
+                user_id=user_id,
                 history_summary=None,
                 recent_meals=[],
                 favorite_patterns=None,
@@ -182,7 +186,7 @@ class AgenticPlanningAgent:
                 preferences_applied=list(preferences.keys()),
             )
 
-            plan_id = self.db.save_meal_plan(meal_plan)
+            plan_id = self.db.save_meal_plan(meal_plan, user_id=user_id)
 
             logger.info(f"Generated meal plan {plan_id} with {len(meals)} meals using LLM")
 
@@ -221,9 +225,11 @@ class AgenticPlanningAgent:
             if self.progress_callback:
                 self.progress_callback("Analyzing your meal preferences...")
 
+            user_id = state["user_id"]
+
             # Get meal history
-            history = self.db.get_meal_history(weeks_back=8)
-            recent_history = self.db.get_meal_history(weeks_back=2)
+            history = self.db.get_meal_history(user_id=user_id, weeks_back=8)
+            recent_history = self.db.get_meal_history(user_id=user_id, weeks_back=2)
 
             if not history:
                 state["history_summary"] = "No meal history available - user is new."
@@ -533,9 +539,9 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             state["error"] = f"Meal selection failed: {str(e)}"
             return state
 
-    def _get_preferences(self) -> Dict[str, Any]:
+    def _get_preferences(self, user_id: int = 1) -> Dict[str, Any]:
         """Load user preferences."""
-        prefs = self.db.get_all_preferences()
+        prefs = self.db.get_all_preferences(user_id=user_id)
 
         # Default preferences
         defaults = {
@@ -563,6 +569,7 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
         meal_plan_id: str,
         date: str,
         requirements: str,
+        user_id: int = 1,
     ) -> Dict[str, Any]:
         """
         Swap a meal in an existing plan using LLM to find a suitable replacement.
@@ -571,13 +578,14 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             meal_plan_id: ID of meal plan to modify
             date: Date of meal to swap (YYYY-MM-DD)
             requirements: User's requirements for the replacement (e.g., "shellfish dish", "vegetarian")
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Dictionary with swap result
         """
         try:
             # Get the meal plan
-            meal_plan = self.db.get_meal_plan(meal_plan_id)
+            meal_plan = self.db.get_meal_plan(meal_plan_id, user_id=user_id)
             if not meal_plan:
                 return {"success": False, "error": "Meal plan not found"}
 
@@ -732,7 +740,7 @@ Example: 5 | Perfect shellfish dish with quick weeknight prep time"""
 
             # Perform the swap
             updated_plan = self.db.swap_meal_in_plan(
-                meal_plan_id, date, selected["recipe_id"]
+                meal_plan_id, date, selected["recipe_id"], user_id=user_id
             )
 
             if not updated_plan:
@@ -752,17 +760,18 @@ Example: 5 | Perfect shellfish dish with quick weeknight prep time"""
             logger.error(f"Error swapping meal: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    def explain_plan(self, meal_plan_id: str) -> str:
+    def explain_plan(self, meal_plan_id: str, user_id: int = 1) -> str:
         """
         Generate a human-readable explanation of a meal plan using LLM.
 
         Args:
             meal_plan_id: ID of saved meal plan
+            user_id: User ID (defaults to 1 for backward compatibility)
 
         Returns:
             Explanation text
         """
-        plan = self.db.get_meal_plan(meal_plan_id)
+        plan = self.db.get_meal_plan(meal_plan_id, user_id=user_id)
 
         if not plan:
             return "Meal plan not found."
