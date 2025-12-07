@@ -429,6 +429,10 @@
                                         </p>
                                     </div>
                                     <div class="flex gap-2">
+                                        <button onclick="openSwapModal('{{ meal.date or meal.meal_date }}', '{{ meal.recipe_id }}', '{{ meal.recipe_name|replace("'", "\\'") }}'); event.stopPropagation();"
+                                                class="text-indigo-600 hover:text-indigo-800" title="Swap Recipe">
+                                            <i class="fas fa-exchange-alt"></i>
+                                        </button>
                                         <a href="/cook?recipe={{ meal.recipe_id }}" class="text-orange-600 hover:text-orange-800" title="View Recipe">
                                             <i class="fas fa-book-open"></i>
                                         </a>
@@ -466,6 +470,79 @@
                     <p class="text-sm text-gray-500">👈 Try "plan meals" in the chat</p>
                 </div>
                 {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Swap Modal -->
+<div id="swapModal" class="fixed inset-0 z-50 hidden">
+    <div class="modal-overlay absolute inset-0" onclick="closeSwapModal()"></div>
+    <div class="relative flex items-center justify-center min-h-screen p-4">
+        <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden relative z-10">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 class="text-xl font-bold text-gray-900">
+                    <i class="fas fa-exchange-alt text-indigo-600 mr-2"></i>
+                    Swap <span id="swapModalRecipeName" class="text-indigo-600"></span>
+                </h3>
+                <button onclick="closeSwapModal()" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+
+            <!-- Modal Body -->
+            <div class="p-6 overflow-y-auto max-h-[60vh]">
+                <!-- Filter Pills -->
+                <div class="mb-4">
+                    <p class="text-sm font-medium text-gray-700 mb-2">Filter by type:</p>
+                    <div class="flex flex-wrap gap-2" id="filterPills">
+                        <button onclick="filterRecipes('soups-stews')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="soups-stews">
+                            🍲 Soup
+                        </button>
+                        <button onclick="filterRecipes('salads')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="salads">
+                            🥗 Salad
+                        </button>
+                        <button onclick="filterRecipes('30-minutes-or-less')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="30-minutes-or-less">
+                            ⚡ Quick
+                        </button>
+                        <button onclick="filterRecipes('main-dish')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="main-dish">
+                            🍽️ Main
+                        </button>
+                        <button onclick="filterRecipes('vegetarian')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="vegetarian">
+                            🥬 Vegetarian
+                        </button>
+                        <button onclick="filterRecipes('chicken')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="chicken">
+                            🍗 Chicken
+                        </button>
+                        <button onclick="filterRecipes('seafood')" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-indigo-100 hover:border-indigo-400 transition-colors" data-tag="seafood">
+                            🦐 Seafood
+                        </button>
+                        <button onclick="clearFilters()" class="filter-pill px-3 py-1 rounded-full text-sm border border-gray-300 hover:bg-gray-100 transition-colors text-gray-500">
+                            ✕ Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Recipe Results -->
+                <div id="swapRecipeResults" class="space-y-2">
+                    <div class="text-center py-8 text-gray-500">
+                        <i class="fas fa-spinner spinner text-2xl mb-2"></i>
+                        <p>Loading recipes...</p>
+                    </div>
+                </div>
+
+                <!-- Ask AI Section -->
+                <div class="mt-4 pt-4 border-t border-gray-200">
+                    <p class="text-sm font-medium text-gray-700 mb-2">Or ask AI for suggestions:</p>
+                    <div class="flex gap-2">
+                        <input type="text" id="swapAiInput" placeholder="e.g., whole roast chicken, quick pasta..."
+                               class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                        <button onclick="askAiForSwap()" class="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+                            <i class="fas fa-magic mr-1"></i> Ask AI
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -953,7 +1030,7 @@ function startProgressStream() {
                 addAssistantMessage(data.message);
                 console.log('Chat complete');
                 // Also update meal plan display directly (fallback if state stream missed the event)
-                updateMealPlanDisplay();
+                updateMealPlanDisplay(true);
             } else if (data.status === 'error') {
                 // Show error
                 removeTypingIndicator();
@@ -1003,7 +1080,7 @@ function startStateStream() {
 
         if (update.type === 'meal_plan_changed') {
             console.log('Meal plan changed, refreshing display...');
-            updateMealPlanDisplay();
+            updateMealPlanDisplay(true);
         } else if (update.type === 'shopping_list_changed') {
             console.log('Shopping list changed');
             // Plan tab doesn't need to do anything for shopping list changes
@@ -1137,11 +1214,20 @@ function createSkeletonHTML() {
 }
 
 // Update meal plan display via AJAX
-async function updateMealPlanDisplay() {
-    console.log('📊 updateMealPlanDisplay() called');
+async function updateMealPlanDisplay(forceRefresh = false) {
+    console.log('📊 updateMealPlanDisplay() called, forceRefresh:', forceRefresh);
     try {
         // Look for meal plan container by ID (more specific)
         let mealPlanContainer = document.getElementById('mealPlanContainer');
+
+        // Skip fetch if server already rendered meals (unless forced)
+        if (!forceRefresh && mealPlanContainer) {
+            const existingMeals = mealPlanContainer.querySelectorAll('.meal-card-wrapper');
+            if (existingMeals.length > 0) {
+                console.log('✅ Using server-rendered meals, skipping API fetch');
+                return;
+            }
+        }
 
         if (!mealPlanContainer) {
             // Create new meal plan display
@@ -1222,6 +1308,10 @@ async function updateMealPlanDisplay() {
                                     </p>
                                 </div>
                                 <div class="flex gap-2">
+                                    <button onclick="openSwapModal('${meal.date || meal.meal_date}', '${meal.recipe_id}', '${meal.recipe_name.replace(/'/g, "\\'")}'); event.stopPropagation();"
+                                            class="text-indigo-600 hover:text-indigo-800" title="Swap Recipe">
+                                        <i class="fas fa-exchange-alt"></i>
+                                    </button>
                                     <a href="/cook?recipe=${meal.recipe_id}" class="text-orange-600 hover:text-orange-800" title="View Recipe">
                                         <i class="fas fa-book-open"></i>
                                     </a>
@@ -1392,7 +1482,7 @@ async function replanMeals() {
 
         if (result.success) {
             // Update plan via AJAX instead of reload
-            await updateMealPlanDisplay();
+            await updateMealPlanDisplay(true);
 
             // Re-enable button
             button.disabled = false;
@@ -1504,6 +1594,197 @@ function setupTooltipPositioning() {
         }
     }, true);
 }
+
+// ============ Swap Modal Functions ============
+let currentSwapDate = null;
+let currentSwapRecipeId = null;
+let activeFilters = [];
+
+function openSwapModal(date, recipeId, recipeName) {
+    currentSwapDate = date;
+    currentSwapRecipeId = recipeId;
+    activeFilters = [];
+
+    // Update modal header
+    document.getElementById('swapModalRecipeName').textContent = recipeName;
+
+    // Show modal
+    document.getElementById('swapModal').classList.remove('hidden');
+
+    // Clear any active filter styles
+    document.querySelectorAll('.filter-pill').forEach(pill => {
+        pill.classList.remove('bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+    });
+
+    // Load initial recipes (main dishes by default for variety)
+    loadSwapRecipes();
+}
+
+function closeSwapModal() {
+    document.getElementById('swapModal').classList.add('hidden');
+    currentSwapDate = null;
+    currentSwapRecipeId = null;
+    activeFilters = [];
+}
+
+function filterRecipes(tag) {
+    const pill = document.querySelector(`.filter-pill[data-tag="${tag}"]`);
+
+    // Toggle filter
+    const index = activeFilters.indexOf(tag);
+    if (index > -1) {
+        activeFilters.splice(index, 1);
+        pill?.classList.remove('bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+    } else {
+        activeFilters.push(tag);
+        pill?.classList.add('bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+    }
+
+    loadSwapRecipes();
+}
+
+function clearFilters() {
+    activeFilters = [];
+    document.querySelectorAll('.filter-pill').forEach(pill => {
+        pill.classList.remove('bg-indigo-100', 'border-indigo-400', 'text-indigo-700');
+    });
+    loadSwapRecipes();
+}
+
+async function loadSwapRecipes() {
+    const resultsContainer = document.getElementById('swapRecipeResults');
+    resultsContainer.innerHTML = `
+        <div class="text-center py-8 text-gray-500">
+            <i class="fas fa-spinner spinner text-2xl mb-2"></i>
+            <p>Loading recipes...</p>
+        </div>
+    `;
+
+    try {
+        // Build query params
+        const params = new URLSearchParams();
+        if (activeFilters.length > 0) {
+            params.set('include_tags', activeFilters.join(','));
+        }
+        params.set('limit', '15');
+
+        const response = await fetch(`/api/browse-recipes?${params}`);
+        const result = await response.json();
+
+        if (result.success && result.recipes.length > 0) {
+            resultsContainer.innerHTML = result.recipes.map(recipe => `
+                <div class="p-3 border border-gray-200 rounded-lg hover:border-indigo-400 hover:bg-indigo-50 cursor-pointer transition-colors flex justify-between items-center"
+                     onclick="selectSwapRecipe('${recipe.id}', '${recipe.name.replace(/'/g, "\\'")}')">
+                    <div>
+                        <h4 class="font-medium text-gray-900">${recipe.name}</h4>
+                        <p class="text-sm text-gray-600">
+                            <i class="fas fa-clock"></i> ${recipe.estimated_time || '?'} min
+                            ${recipe.cuisine ? `• <i class="fas fa-globe"></i> ${recipe.cuisine}` : ''}
+                            ${recipe.difficulty ? `• ${recipe.difficulty}` : ''}
+                        </p>
+                    </div>
+                    <button class="px-3 py-1 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700">
+                        Select
+                    </button>
+                </div>
+            `).join('');
+        } else {
+            resultsContainer.innerHTML = `
+                <div class="text-center py-8 text-gray-500">
+                    <i class="fas fa-search text-2xl mb-2"></i>
+                    <p>No recipes found. Try different filters!</p>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error loading recipes:', error);
+        resultsContainer.innerHTML = `
+            <div class="text-center py-8 text-red-500">
+                <i class="fas fa-exclamation-triangle text-2xl mb-2"></i>
+                <p>Error loading recipes. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+async function selectSwapRecipe(newRecipeId, newRecipeName) {
+    // Capture date before closing modal (closeSwapModal resets it)
+    const swapDate = currentSwapDate;
+
+    // Optimistic UI update - close modal immediately
+    closeSwapModal();
+
+    try {
+        const response = await fetch('/api/swap-meal-direct', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: swapDate,
+                new_recipe_id: newRecipeId
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            console.log(`Swapped to: ${result.new_recipe}`);
+            // SSE will handle the UI update, but also trigger manual refresh
+            updateMealPlanDisplay(true);
+        } else {
+            alert('Failed to swap meal: ' + result.error);
+        }
+    } catch (error) {
+        console.error('Error swapping meal:', error);
+        alert('Error swapping meal. Please try again.');
+    }
+}
+
+async function askAiForSwap() {
+    const input = document.getElementById('swapAiInput');
+    const requirements = input.value.trim();
+
+    if (!requirements) {
+        alert('Please enter what you want to swap to');
+        return;
+    }
+
+    // Capture date before closing modal (closeSwapModal resets it)
+    const swapDate = currentSwapDate;
+
+    // Close modal and use existing chat-based swap
+    closeSwapModal();
+
+    // Use the existing swap API
+    try {
+        const response = await fetch('/api/swap-meal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                date: swapDate,
+                requirements: requirements
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            console.log(`AI swapped to: ${result.new_recipe}`);
+            updateMealPlanDisplay(true);
+        } else {
+            alert('Failed to swap meal: ' + result.error);
+        }
+    } catch (error) {
+        console.error('Error with AI swap:', error);
+        alert('Error swapping meal. Please try again.');
+    }
+}
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.getElementById('swapModal').classList.contains('hidden')) {
+        closeSwapModal();
+    }
+});
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {

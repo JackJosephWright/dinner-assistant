@@ -601,7 +601,8 @@ def plan_page():
                         meal_dict['cuisine'] = meal.recipe.cuisine
                         meal_dict['difficulty'] = meal.recipe.difficulty
                     # Format date nicely (e.g., "Friday, November 1")
-                    date_str = meal_dict.pop('date', None)
+                    # Keep 'date' as ISO format for swap modal, add 'meal_date' for display
+                    date_str = meal_dict.get('date')
                     if date_str:
                         from datetime import datetime
                         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
@@ -766,7 +767,8 @@ def cook_page():
                         meal_dict['cuisine'] = meal.recipe.cuisine
                         meal_dict['difficulty'] = meal.recipe.difficulty
                     # Format date nicely (e.g., "Friday, November 1")
-                    date_str = meal_dict.pop('date', None)
+                    # Keep 'date' as ISO format for swap modal, add 'meal_date' for display
+                    date_str = meal_dict.get('date')
                     if date_str:
                         from datetime import datetime
                         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
@@ -1046,6 +1048,127 @@ def api_swap_meal():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/swap-meal-direct', methods=['POST'])
+@login_required
+def api_swap_meal_direct():
+    """
+    Direct swap without LLM - instant response.
+
+    Request body:
+        date: Date of meal to swap (YYYY-MM-DD)
+        new_recipe_id: ID of the recipe to swap in
+
+    This bypasses LLM selection for when user has already chosen a recipe.
+    """
+    try:
+        data = request.json
+        meal_plan_id = session.get('meal_plan_id')
+        user_id = session.get('user_id', 1)
+
+        if not meal_plan_id:
+            return jsonify({"success": False, "error": "No active meal plan"}), 400
+
+        date = data.get('date')
+        new_recipe_id = data.get('new_recipe_id')
+
+        if not date or not new_recipe_id:
+            return jsonify({"success": False, "error": "Missing date or new_recipe_id"}), 400
+
+        # Get the new recipe to return its name
+        new_recipe = assistant.db.get_recipe(new_recipe_id)
+        if not new_recipe:
+            return jsonify({"success": False, "error": "Recipe not found"}), 404
+
+        # Get old meal info before swap
+        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
+        old_recipe_name = None
+        if meal_plan:
+            for meal in meal_plan.meals:
+                if meal.date == date:
+                    old_recipe_name = meal.recipe.name
+                    break
+
+        # Perform direct swap (no LLM)
+        updated_plan = assistant.db.swap_meal_in_plan(
+            meal_plan_id, date, new_recipe_id, user_id=user_id
+        )
+
+        if not updated_plan:
+            return jsonify({"success": False, "error": "Failed to update meal plan"}), 500
+
+        # Phase 6: Update snapshot after swap
+        if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+            try:
+                snapshot_id = session['snapshot_id']
+                snapshot = assistant.db.get_snapshot(snapshot_id)
+
+                if snapshot:
+                    snapshot['planned_meals'] = [m.to_dict() for m in updated_plan.meals]
+                    assistant.db.save_snapshot(snapshot)
+                    log_snapshot_save(snapshot_id, snapshot['user_id'], snapshot['week_of'])
+                    logger.info(f"[Phase 6] Updated snapshot after direct meal swap: {date}")
+            except Exception as e:
+                logger.error(f"[Phase 6] Failed to update snapshot after direct swap: {e}")
+
+        # Broadcast meal plan change immediately
+        broadcast_state_change('meal_plan_changed', {
+            'meal_plan_id': meal_plan_id,
+            'date_changed': date
+        })
+        logger.info(f"Broadcasted meal_plan_changed event (direct swap)")
+
+        # Capture for background thread
+        snapshot_id_for_bg = session.get('snapshot_id') if SNAPSHOTS_ENABLED else None
+        user_id_for_bg = user_id
+
+        # Auto-regenerate shopping list in BACKGROUND THREAD
+        def regenerate_shopping_list_async():
+            try:
+                logger.info(f"[Background] Regenerating shopping list after direct swap")
+                shop_result = assistant.create_shopping_list(meal_plan_id)
+
+                if shop_result.get("success"):
+                    new_shopping_list_id = shop_result["grocery_list_id"]
+                    logger.info(f"[Background] Auto-generated shopping list: {new_shopping_list_id}")
+
+                    if SNAPSHOTS_ENABLED and snapshot_id_for_bg:
+                        try:
+                            snapshot = assistant.db.get_snapshot(snapshot_id_for_bg)
+                            if snapshot:
+                                grocery_list = assistant.db.get_grocery_list(new_shopping_list_id, user_id=user_id_for_bg)
+                                if grocery_list:
+                                    snapshot['grocery_list'] = grocery_list.to_dict()
+                                    snapshot['updated_at'] = datetime.now().isoformat()
+                                    assistant.db.save_snapshot(snapshot)
+                                    logger.info(f"[Background][Phase 6] Updated snapshot grocery list")
+                        except Exception as e:
+                            logger.error(f"[Background][Phase 6] Failed to update snapshot grocery list: {e}")
+
+                    broadcast_state_change('shopping_list_changed', {
+                        'shopping_list_id': new_shopping_list_id,
+                        'meal_plan_id': meal_plan_id,
+                    })
+                    logger.info(f"[Background] Broadcasted shopping_list_changed event")
+            except Exception as e:
+                logger.error(f"[Background] Error auto-generating shopping list: {e}")
+
+        thread = threading.Thread(target=regenerate_shopping_list_async, daemon=True)
+        thread.start()
+
+        return jsonify({
+            "success": True,
+            "meal_plan_id": meal_plan_id,
+            "date": date,
+            "old_recipe": old_recipe_name,
+            "new_recipe": new_recipe.name,
+            "new_recipe_id": new_recipe_id,
+        })
+
+    except Exception as e:
+        logger.error(f"Error in direct swap: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/meal-feedback', methods=['POST'])
 @login_required
 def api_submit_meal_feedback():
@@ -1242,6 +1365,57 @@ def api_search_recipes():
 
     except Exception as e:
         logger.error(f"Error searching recipes: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/browse-recipes', methods=['GET'])
+@login_required
+def api_browse_recipes():
+    """
+    Browse recipes with advanced filtering (no LLM involved).
+
+    Query params:
+        query: Text search in name/description/ingredients
+        include_tags: Comma-separated tags recipes MUST have (e.g., "main-dish,whole-chicken")
+        exclude_tags: Comma-separated tags recipes must NOT have (e.g., "salads")
+        max_time: Maximum cooking time in minutes
+        limit: Max results (default 20)
+
+    Example: /api/browse-recipes?query=chicken&include_tags=main-dish,whole-chicken&exclude_tags=salads
+    """
+    try:
+        query = request.args.get('query')
+        include_tags_str = request.args.get('include_tags', '')
+        exclude_tags_str = request.args.get('exclude_tags', '')
+        max_time = request.args.get('max_time', type=int)
+        limit = request.args.get('limit', 20, type=int)
+
+        # Parse comma-separated tags
+        include_tags = [t.strip() for t in include_tags_str.split(',') if t.strip()] or None
+        exclude_tags = [t.strip() for t in exclude_tags_str.split(',') if t.strip()] or None
+
+        recipes = assistant.db.search_recipes(
+            query=query,
+            max_time=max_time,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            limit=limit,
+        )
+
+        return jsonify({
+            "success": True,
+            "recipes": [recipe.to_dict() for recipe in recipes],
+            "count": len(recipes),
+            "filters": {
+                "query": query,
+                "include_tags": include_tags,
+                "exclude_tags": exclude_tags,
+                "max_time": max_time,
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error browsing recipes: {e}", exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 

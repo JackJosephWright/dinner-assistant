@@ -468,22 +468,35 @@ class DatabaseInterface:
         query: Optional[str] = None,
         max_time: Optional[int] = None,
         tags: Optional[List[str]] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         exclude_ids: Optional[List[str]] = None,
+        search_ingredients: bool = True,
         limit: int = 20,
     ) -> List[Recipe]:
         """
         Search recipes in the Food.com database.
 
         Args:
-            query: Keywords to search in name/description
+            query: Keywords to search in name/description/ingredients
             max_time: Maximum cooking time in minutes
-            tags: Required tags
+            tags: Required tags (alias for include_tags, for backward compatibility)
+            include_tags: Tags that recipes MUST have (e.g., ["main-dish", "whole-chicken"])
+            exclude_tags: Tags that recipes must NOT have (e.g., ["salads"])
             exclude_ids: Recipe IDs to exclude
+            search_ingredients: If True, also search the ingredients field (default: True)
             limit: Maximum number of results
 
         Returns:
             List of matching Recipe objects
         """
+        # Merge tags and include_tags for backward compatibility
+        all_include_tags = []
+        if tags:
+            all_include_tags.extend(tags)
+        if include_tags:
+            all_include_tags.extend(include_tags)
+
         with sqlite3.connect(self.recipes_db) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -491,11 +504,16 @@ class DatabaseInterface:
             sql = "SELECT * FROM recipes WHERE 1=1"
             params = []
 
-            # Search query
+            # Search query in name, description, AND ingredients
             if query:
-                sql += " AND (name LIKE ? OR description LIKE ?)"
-                search_term = f"%{query}%"
-                params.extend([search_term, search_term])
+                if search_ingredients:
+                    sql += " AND (name LIKE ? OR description LIKE ? OR ingredients LIKE ?)"
+                    search_term = f"%{query}%"
+                    params.extend([search_term, search_term, search_term])
+                else:
+                    sql += " AND (name LIKE ? OR description LIKE ?)"
+                    search_term = f"%{query}%"
+                    params.extend([search_term, search_term])
 
             # Time filter
             if max_time:
@@ -509,10 +527,16 @@ class DatabaseInterface:
                 sql += f" AND ({time_condition})"
                 params.extend([f"%{tag}%" for tag in time_tags])
 
-            # Required tags
-            if tags:
-                for tag in tags:
+            # Required tags (include)
+            if all_include_tags:
+                for tag in all_include_tags:
                     sql += " AND tags LIKE ?"
+                    params.append(f"%{tag}%")
+
+            # Excluded tags
+            if exclude_tags:
+                for tag in exclude_tags:
+                    sql += " AND tags NOT LIKE ?"
                     params.append(f"%{tag}%")
 
             # Exclude recipes

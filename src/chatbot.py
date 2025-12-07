@@ -497,9 +497,14 @@ Current context:
 {context_str}{meal_plan_dates_context}
 
 When users ask about meal planning:
-- Offer to plan their week
-- Ask about preferences if needed
-- Use plan_meals_smart for most requests (supports allergens, time limits, search keywords)
+- IMMEDIATELY call plan_meals_smart to create the plan - don't search first
+- ALWAYS use plan_meals_smart (never use plan_meals or search_recipes for planning)
+- For CUISINE-SPECIFIC requests (e.g., "French meals", "Italian week", "Asian dishes"):
+  * Call plan_meals_smart DIRECTLY with the cuisine as search_query
+  * Example: "week of French meals" → plan_meals_smart(num_days=7, search_query="French")
+  * Example: "5 Italian dinners" → plan_meals_smart(num_days=5, search_query="Italian")
+  * Example: "Asian recipes" → plan_meals_smart(num_days=7, search_query="Asian")
+  * DO NOT use search_recipes first - go straight to plan_meals_smart
 - For MULTI-REQUIREMENT requests (e.g., "5 meals where one is ramen and one is spaghetti"):
   * Use plan_meals_smart WITHOUT specifying search_query (defaults to "dinner" for broad coverage)
   * Or use BROAD search_query like "main course" if you want to be explicit
@@ -553,7 +558,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
         return [
             {
                 "name": "plan_meals",
-                "description": "Generate a 7-day meal plan with variety and balanced nutrition. Returns a meal plan with recipe names, IDs, and variety summary.",
+                "description": "DEPRECATED - use plan_meals_smart instead. This tool ignores cuisine requirements and is slower. Only use if plan_meals_smart fails.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -893,15 +898,20 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                             user_message = msg["content"]
                             break
 
+                # Always emit progress for LLM selection (this is a 3-5 second operation)
+                self._verbose_output(f"Selecting {num_days} varied recipes from {len(filtered)} options...")
+
                 if self.verbose:
-                    self._verbose_output(f"      → Using LLM to select {num_days} varied recipes from {len(filtered)} options...")
                     if user_message:
                         self._verbose_output(f"      → Passing user requirements to selector: '{user_message[:60]}...'")
 
                 selected = self._select_recipes_with_llm(filtered, num_days, recent_names, user_message)
 
+                # Always emit completion progress
+                self._verbose_output(f"Selected: {', '.join([r.name[:25] for r in selected[:3]])}...")
+
                 if self.verbose:
-                    self._verbose_output(f"      → LLM selected: {', '.join([r.name[:30] for r in selected])}")
+                    self._verbose_output(f"      → Full selection: {', '.join([r.name[:30] for r in selected])}")
 
                 # 4b. Store unselected recipes as backups for quick swaps
                 backups = [r for r in filtered if r not in selected][:20]  # Top 20 backups
@@ -920,6 +930,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 ]
 
                 # 6. Create and save MealPlan
+                self._verbose_output("Saving your meal plan...")
                 backup_dict = {search_query: backups} if backups and search_query else {}
                 plan = MealPlan(
                     week_of=week_of,  # Use week start from UI or first date
@@ -1380,6 +1391,21 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
             tool_results = []
             for content_block in response.content:
                 if content_block.type == "tool_use":
+                    # Always emit user-friendly progress for tools (keeps UI responsive)
+                    tool_friendly_names = {
+                        "plan_meals": "Creating your meal plan...",
+                        "plan_meals_smart": "Finding recipes for your meal plan...",
+                        "create_shopping_list": "Building your shopping list...",
+                        "search_recipes": "Searching recipes...",
+                        "swap_meal": "Finding a replacement meal...",
+                        "swap_meal_fast": "Swapping meal...",
+                        "get_cooking_guide": "Loading recipe details...",
+                        "check_allergens": "Checking allergens...",
+                        "show_current_plan": "Loading your meal plan...",
+                    }
+                    friendly_msg = tool_friendly_names.get(content_block.name, f"Running {content_block.name}...")
+                    self._verbose_output(friendly_msg)
+
                     if self.verbose:
                         self._verbose_output(f"\n🔧 [TOOL] {content_block.name}")
                         self._verbose_output(f"   Input: {json.dumps(content_block.input, indent=2)}")
@@ -1405,6 +1431,9 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 "role": "user",
                 "content": tool_results,
             })
+
+            # Emit progress before next LLM call
+            self._verbose_output("Preparing your response...")
 
             # Get next response
             response = self.client.messages.create(

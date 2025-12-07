@@ -616,7 +616,7 @@ DAY 2: 12 | Different protein (chicken), still weeknight-friendly"""
             if self.progress_callback:
                 self.progress_callback("Finding replacement options...")
 
-            # Ask LLM to determine search queries for the replacement
+            # Ask LLM to determine search queries with tag filters for the replacement
             prompt = f"""You are a meal planning assistant. The user wants to swap a meal in their plan.
 
 Current meal: {meal_to_swap.recipe.name} on {day_name}, {date}
@@ -625,14 +625,28 @@ Max cooking time: {max_time} minutes
 
 User's requirements for replacement: {requirements}
 
-Please provide 3-5 search queries to find suitable replacement recipes.
-Each query should be a specific keyword or phrase.
+Generate 2-3 search queries with tag filters to find the right type of recipe.
 
-Format as one keyword per line. Examples:
-shrimp
-garlic butter scallops
-seafood pasta
-shellfish"""
+Available tags for filtering:
+- Dish types: main-dish, side-dishes, salads, soups-stews, appetizers, desserts
+- Proteins: chicken, beef, pork, seafood, fish, whole-chicken, chicken-breasts
+- Diet: vegetarian, vegan, low-carb, healthy
+- Time: 15-minutes-or-less, 30-minutes-or-less, 60-minutes-or-less
+
+Output format (one per line):
+KEYWORD | INCLUDE_TAGS | EXCLUDE_TAGS
+
+Examples:
+roast chicken | main-dish,whole-chicken | salads,appetizers
+vegetable soup | soups-stews,vegetarian |
+quick pasta | main-dish,30-minutes-or-less |
+shrimp scampi | main-dish,seafood | salads
+
+Rules:
+- Use INCLUDE_TAGS to specify what type of dish you want
+- Use EXCLUDE_TAGS to filter out wrong dish types (like salads when looking for main dish)
+- Leave EXCLUDE_TAGS empty if not needed
+- Be specific with tags to get precise results"""
 
             response = self.client.messages.create(
                 model=self.model,
@@ -643,19 +657,36 @@ shellfish"""
             search_queries_text = response.content[0].text
             logger.info(f"LLM swap search queries:\n{search_queries_text}")
 
-            # Execute searches
+            # Execute searches with tag filtering
             candidates = []
             recent_meal_names = {m.recipe.name.lower() for m in meal_plan.meals if m.date != date}
 
             for line in search_queries_text.split("\n"):
-                keyword = line.strip()
-                if not keyword or len(keyword) < 3:
+                line = line.strip()
+                if not line or "|" not in line:
                     continue
 
-                # Search recipes
+                # Parse structured query: KEYWORD | INCLUDE_TAGS | EXCLUDE_TAGS
+                parts = [p.strip() for p in line.split("|")]
+                keyword = parts[0] if len(parts) > 0 else ""
+                include_tags_str = parts[1] if len(parts) > 1 else ""
+                exclude_tags_str = parts[2] if len(parts) > 2 else ""
+
+                if not keyword or len(keyword) < 2:
+                    continue
+
+                # Parse tags
+                include_tags = [t.strip() for t in include_tags_str.split(",") if t.strip()] or None
+                exclude_tags = [t.strip() for t in exclude_tags_str.split(",") if t.strip()] or None
+
+                logger.info(f"Searching: query='{keyword}', include={include_tags}, exclude={exclude_tags}")
+
+                # Search recipes with tag filtering
                 recipes = self.db.search_recipes(
                     query=keyword,
                     max_time=max_time,
+                    include_tags=include_tags,
+                    exclude_tags=exclude_tags,
                     limit=10,
                 )
 

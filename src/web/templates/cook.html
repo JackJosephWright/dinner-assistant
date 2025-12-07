@@ -144,6 +144,98 @@
 .spinner {
     animation: spin 1s linear infinite;
 }
+
+/* Print styles - only show recipe content */
+@media print {
+    /* Hide navigation, header, footer */
+    nav, header, footer {
+        display: none !important;
+    }
+
+    /* Hide page header and intro text */
+    .px-4.py-6 > .mb-6:first-child {
+        display: none !important;
+    }
+
+    /* Hide meal cards section */
+    #mealPlanSection {
+        display: none !important;
+    }
+
+    /* Hide search sidebar */
+    .lg\\:col-span-1 {
+        display: none !important;
+    }
+
+    /* Hide loading and empty states */
+    #emptyState,
+    #loadingRecipe {
+        display: none !important;
+    }
+
+    /* Hide feedback section and action buttons */
+    .bg-gradient-to-r.from-blue-50.to-indigo-50,
+    .mt-6.pt-6.border-t-2 {
+        display: none !important;
+    }
+
+    /* Make recipe container full width */
+    .grid.grid-cols-1.lg\\:grid-cols-3 {
+        display: block !important;
+    }
+
+    .lg\\:col-span-2 {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    #recipeDetails {
+        display: block !important;
+    }
+
+    /* Clean up print layout */
+    .shadow-lg, .shadow {
+        box-shadow: none !important;
+    }
+
+    .rounded-lg {
+        border-radius: 0 !important;
+    }
+
+    body {
+        font-size: 12pt;
+        line-height: 1.4;
+    }
+
+    main {
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    /* Ensure ingredients list prints nicely */
+    .bg-green-50 {
+        background: #f0f9f0 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    /* Ingredients layout for print */
+    #recipeDetails .grid.grid-cols-1.lg\\:grid-cols-3 {
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    #recipeDetails .lg\\:col-span-1,
+    #recipeDetails .lg\\:col-span-2 {
+        display: block !important;
+        width: 100% !important;
+    }
+
+    /* Page break handling */
+    .lg\\:col-span-2 > div {
+        page-break-inside: avoid;
+    }
+}
 </style>
 {% endblock %}
 
@@ -247,7 +339,7 @@ async function loadRecipe(recipeId) {
             displayRecipe({
                 success: true,
                 recipe_name: recipeData.name,
-                ingredients: recipeData.ingredients,
+                ingredients: recipeData.ingredients_raw || recipeData.ingredients,
                 steps: recipeData.steps,
                 servings: recipeData.servings,
                 estimated_time: recipeData.estimated_time,
