@@ -1566,8 +1566,33 @@ def api_chat():
                     # Phase 2: Create snapshot for chat-generated meal plans
                     if plan_changed and chatbot_instance.current_meal_plan_id and SNAPSHOTS_ENABLED:
                         try:
-                            meal_plan = assistant.db.get_meal_plan(chatbot_instance.current_meal_plan_id, user_id=user_id_for_bg)
+                            # Prefer chatbot's cached plan (has backup_recipes) over DB load
+                            meal_plan = chatbot_instance.last_meal_plan
+                            if not meal_plan or meal_plan.id != chatbot_instance.current_meal_plan_id:
+                                # Fallback to DB if cache miss
+                                meal_plan = assistant.db.get_meal_plan(chatbot_instance.current_meal_plan_id, user_id=user_id_for_bg)
+
                             if meal_plan:
+                                # Serialize backup_recipes as lightweight objects for instant swap modal
+                                backup_recipes_light = []
+                                for category, recipes in meal_plan.backup_recipes.items():
+                                    for recipe in recipes[:20]:
+                                        if len(backup_recipes_light) >= 20:
+                                            break
+                                        diet_tags = [t for t in recipe.tags if t in (
+                                            "vegetarian", "vegan", "gluten-free", "low-carb",
+                                            "dairy-free", "keto", "healthy"
+                                        )]
+                                        backup_recipes_light.append({
+                                            "id": recipe.id,
+                                            "name": recipe.name,
+                                            "estimated_time": recipe.estimated_time,
+                                            "cuisine": recipe.cuisine,
+                                            "diet_tags": diet_tags,
+                                        })
+                                    if len(backup_recipes_light) >= 20:
+                                        break
+
                                 snapshot = {
                                     'id': meal_plan.id,
                                     'user_id': user_id_for_bg,  # Use captured variable
@@ -1576,13 +1601,14 @@ def api_chat():
                                     'version': 1,
                                     'planned_meals': [m.to_dict() for m in meal_plan.meals],
                                     'grocery_list': None,
+                                    'backup_recipes': backup_recipes_light,  # For instant swap modal
                                 }
                                 new_snapshot_id = assistant.db.save_snapshot(snapshot)
                                 # Update captured variable for nested thread
                                 nonlocal snapshot_id_for_bg
                                 snapshot_id_for_bg = new_snapshot_id
                                 log_snapshot_save(new_snapshot_id, user_id_for_bg, meal_plan.week_of)
-                                logger.info(f"[Background][Phase 2] Created snapshot {new_snapshot_id} for chat-generated plan")
+                                logger.info(f"[Background][Phase 2] Created snapshot {new_snapshot_id} with {len(backup_recipes_light)} backup recipes")
                         except Exception as e:
                             logger.error(f"[Background][Phase 2] Failed to create snapshot: {e}", exc_info=True)
 
@@ -1829,12 +1855,25 @@ def api_get_current_plan():
             meal_dict['meal_date'] = meal_dict.pop('date', None)
             enriched_meals.append(meal_dict)
 
+        # Get backup_recipes from snapshot (if available)
+        backup_recipes = []
+        snapshot_id = session.get('snapshot_id')
+        if snapshot_id:
+            try:
+                snapshot = assistant.db.get_snapshot(snapshot_id)
+                if snapshot and 'backup_recipes' in snapshot:
+                    backup_recipes = snapshot['backup_recipes']
+                    logger.debug(f"[/api/plan/current] Found {len(backup_recipes)} backup recipes in snapshot")
+            except Exception as e:
+                logger.warning(f"Failed to load backup recipes from snapshot: {e}")
+
         return jsonify({
             "success": True,
             "plan": {
                 'id': meal_plan.id,
                 'week_of': meal_plan.week_of,
                 'meals': enriched_meals,
+                'backup_recipes': backup_recipes,  # For instant swap modal
             }
         })
 

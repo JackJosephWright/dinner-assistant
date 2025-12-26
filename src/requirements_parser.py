@@ -100,8 +100,17 @@ def parse_requirements(message: str, dates: List[str]) -> List[DayRequirement]:
     if not _has_day_specifiers(msg_lower):
         global_constraints = _extract_global_constraints(msg_lower)
         if global_constraints:
-            for req in requirements:
-                _apply_constraints(req, global_constraints)
+            cuisines = global_constraints.get("cuisines", [])
+
+            if len(cuisines) > 1:
+                # Round-robin distribution: "italian and mexican" → alternate cuisines
+                for i, req in enumerate(requirements):
+                    cuisine = cuisines[i % len(cuisines)]
+                    _apply_constraints(req, global_constraints, cuisine_override=cuisine)
+            else:
+                # Single or no cuisine - apply to all
+                for req in requirements:
+                    _apply_constraints(req, global_constraints)
             return requirements
 
     # Parse day-specific clauses
@@ -182,7 +191,7 @@ def _extract_constraints(text: str) -> dict:
 
     Returns:
         {
-            "cuisine": Optional[str],
+            "cuisines": List[str],  # Multiple cuisines supported for round-robin
             "dietary_hard": List[str],
             "dietary_soft": List[str],
             "surprise": bool,
@@ -190,7 +199,7 @@ def _extract_constraints(text: str) -> dict:
         }
     """
     result = {
-        "cuisine": None,
+        "cuisines": [],  # Changed from "cuisine" to support multiple
         "dietary_hard": [],
         "dietary_soft": [],
         "surprise": False,
@@ -229,19 +238,22 @@ def _extract_constraints(text: str) -> dict:
                   "low", "carb", "gluten", "dairy", "based", "plant"}
 
     for word in words:
+        # Strip punctuation from word
+        word_clean = word.strip(".,;:!?")
+
         # Skip if word is part of a phrase we already matched
-        if word in stop_words:
+        if word_clean in stop_words:
             continue
 
-        normalized = normalize_tag(word)
+        normalized = normalize_tag(word_clean)
         if normalized:
             # Don't add if already added via phrase matching
             if normalized not in result["dietary_hard"] and normalized not in result["dietary_soft"]:
-                if result["cuisine"] != normalized:
+                if normalized not in result["cuisines"]:
                     _categorize_constraint(normalized, result)
-        elif len(word) > 2 and word.isalpha():
+        elif len(word_clean) > 2 and word_clean.isalpha():
             # Potential unhandled constraint
-            result["unhandled"].append(word)
+            result["unhandled"].append(word_clean)
 
     return result
 
@@ -249,7 +261,9 @@ def _extract_constraints(text: str) -> dict:
 def _categorize_constraint(tag: str, result: dict):
     """Categorize a normalized tag into the appropriate constraint type."""
     if tag in CANON_CUISINES:
-        result["cuisine"] = tag
+        # Collect multiple cuisines for round-robin distribution
+        if tag not in result["cuisines"]:
+            result["cuisines"].append(tag)
     elif tag in CANON_DIETARY_HARD:
         if tag not in result["dietary_hard"]:
             result["dietary_hard"].append(tag)
@@ -258,10 +272,20 @@ def _categorize_constraint(tag: str, result: dict):
             result["dietary_soft"].append(tag)
 
 
-def _apply_constraints(req: DayRequirement, constraints: dict):
-    """Apply extracted constraints to a DayRequirement."""
-    if constraints.get("cuisine"):
-        req.cuisine = constraints["cuisine"]
+def _apply_constraints(req: DayRequirement, constraints: dict, cuisine_override: str = None):
+    """Apply extracted constraints to a DayRequirement.
+
+    Args:
+        req: The DayRequirement to update
+        constraints: Extracted constraints dict
+        cuisine_override: If set, use this cuisine instead of constraints["cuisines"]
+    """
+    if cuisine_override:
+        req.cuisine = cuisine_override
+    elif constraints.get("cuisines"):
+        # For single cuisine, apply directly; for multiple, caller handles distribution
+        if len(constraints["cuisines"]) == 1:
+            req.cuisine = constraints["cuisines"][0]
     if constraints.get("dietary_hard"):
         req.dietary_hard.extend(constraints["dietary_hard"])
     if constraints.get("dietary_soft"):
@@ -276,7 +300,7 @@ def _apply_constraint_to_all(requirements: List[DayRequirement], constraint: str
     """Apply a single constraint to all requirements."""
     normalized = normalize_tag(constraint)
     if normalized:
-        constraints = {"cuisine": None, "dietary_hard": [], "dietary_soft": [], "surprise": False, "unhandled": []}
+        constraints = {"cuisines": [], "dietary_hard": [], "dietary_soft": [], "surprise": False, "unhandled": []}
         _categorize_constraint(normalized, constraints)
         for req in requirements:
             _apply_constraints(req, constraints)

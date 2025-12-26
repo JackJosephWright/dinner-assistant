@@ -616,23 +616,69 @@ class MealPlan:
 
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
+        # Serialize backup recipes as lightweight objects (max 20)
+        backup_recipes_light = []
+        for category, recipes in self.backup_recipes.items():
+            for recipe in recipes[:20]:  # Cap at 20 total
+                if len(backup_recipes_light) >= 20:
+                    break
+                # Extract diet tags from recipe tags
+                diet_tags = [t for t in recipe.tags if t in (
+                    "vegetarian", "vegan", "gluten-free", "low-carb",
+                    "dairy-free", "keto", "healthy"
+                )]
+                backup_recipes_light.append({
+                    "id": recipe.id,
+                    "name": recipe.name,
+                    "estimated_time": recipe.estimated_time,
+                    "cuisine": recipe.cuisine,
+                    "diet_tags": diet_tags,
+                })
+            if len(backup_recipes_light) >= 20:
+                break
+
         return {
             "id": self.id,
             "week_of": self.week_of,
             "meals": [meal.to_dict() for meal in self.meals],
             "created_at": self.created_at.isoformat(),
             "preferences_applied": self.preferences_applied,
+            "backup_recipes": backup_recipes_light,
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "MealPlan":
         """Create MealPlan from dictionary."""
+        # Restore backup recipes from lightweight format
+        # Note: These are partial Recipe objects for UI display only
+        backup_recipes = {}
+        backup_list = data.get("backup_recipes", [])
+        if backup_list:
+            # Store all backups under "mixed" category
+            backup_recipes["mixed"] = [
+                Recipe(
+                    id=r["id"],
+                    name=r["name"],
+                    description="",
+                    ingredients=[],
+                    ingredients_raw=[],
+                    steps=[],
+                    servings=4,
+                    serving_size="",
+                    tags=r.get("diet_tags", []),
+                    estimated_time=r.get("estimated_time"),
+                    cuisine=r.get("cuisine"),
+                )
+                for r in backup_list
+            ]
+
         return cls(
             id=data.get("id"),
             week_of=data["week_of"],
             meals=[PlannedMeal.from_dict(m) for m in data["meals"]],
             created_at=datetime.fromisoformat(data["created_at"]),
             preferences_applied=data.get("preferences_applied", []),
+            backup_recipes=backup_recipes,
         )
 
 
