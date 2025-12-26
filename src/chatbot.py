@@ -24,9 +24,6 @@ from anthropic import Anthropic
 from main import MealPlanningAssistant
 from data.models import PlannedMeal, MealPlan
 from tag_canon import (
-    CANON_CUISINES,
-    CANON_DIETARY_HARD,
-    CANON_DIETARY_SOFT,
     CANON_COURSE_MAIN,
     CANON_COURSE_EXCLUDE,
     TAG_SYNONYMS,

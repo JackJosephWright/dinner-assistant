@@ -13,7 +13,6 @@ Examples:
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import List, Optional, Tuple
 
 from tag_canon import (
