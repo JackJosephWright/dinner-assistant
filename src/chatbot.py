@@ -140,74 +140,104 @@ class MealPlanningChatbot:
             if self.verbose:
                 self._verbose_output(f"Note: Could not load recent plan: {e}")
 
-    def _select_recipes_with_llm(self, recipes: List, num_needed: int, recent_meals: List = None, user_requirements: str = None) -> List:
+    def _select_recipes_with_llm(
+        self,
+        candidates_by_date: Dict[str, List],
+        day_requirements: List[DayRequirement],
+        recent_meals: List = None,
+        validation_feedback: str = None
+    ) -> List:
         """
-        Use LLM to intelligently select recipes considering variety and preferences.
+        Use LLM to select ONE recipe per day from per-day candidate pools.
 
         Args:
-            recipes: List of Recipe objects to choose from
-            num_needed: Number of recipes to select
+            candidates_by_date: Dict mapping date -> list of candidate Recipe objects
+            day_requirements: List of DayRequirement objects (in date order)
             recent_meals: Optional list of recent meal names for variety
-            user_requirements: Optional user's specific requirements (e.g., "one ramen, one spaghetti")
+            validation_feedback: Optional feedback from previous validation failure (for retry)
 
         Returns:
-            List of selected Recipe objects
+            List of selected Recipe objects (in date order)
         """
-        if len(recipes) <= num_needed:
-            return recipes
+        # Build per-day sections for the prompt
+        sections = []
+        all_pools_empty = True
+        dates = [req.date for req in day_requirements]
 
-        # Format recipes compactly for LLM
-        recipes_text = []
-        for i, r in enumerate(recipes, 1):
-            ing_count = len(r.get_ingredients()) if r.has_structured_ingredients() else len(r.ingredients_raw)
-            recipes_text.append(
-                f"#{i} - {r.name}\n"
-                f"   Recipe ID: {r.id}\n"
-                f"   Ingredients: {ing_count} items\n"
-                f"   Tags: {', '.join(r.tags[:5])}"
-            )
+        for req in day_requirements:
+            pool = candidates_by_date.get(req.date, [])
+            if pool:
+                all_pools_empty = False
+
+            # Show top 20 candidates per day (from pool of 80)
+            pool_text = "\n".join([
+                f"  #{i+1} [ID:{r.id}] {r.name} [{', '.join(r.tags[:5])}]"
+                for i, r in enumerate(pool[:20])
+            ])
+
+            # Format requirements for this day
+            req_parts = []
+            if req.cuisine:
+                req_parts.append(f"Cuisine: {req.cuisine}")
+            if req.dietary_hard:
+                req_parts.append(f"Dietary (MUST have): {', '.join(req.dietary_hard)}")
+            if req.dietary_soft:
+                req_parts.append(f"Preferences: {', '.join(req.dietary_soft)}")
+            if req.surprise:
+                req_parts.append("Surprise me (any cuisine)")
+            if not req_parts:
+                req_parts.append("No specific requirements")
+
+            sections.append(f"""
+### {req.date}
+Requirements: {' | '.join(req_parts)}
+Candidates ({len(pool)} available, showing top 20):
+{pool_text if pool_text else "  (no candidates available)"}
+""")
+
+        if all_pools_empty:
+            # Fallback: return empty list if no candidates
+            if self.verbose:
+                self._verbose_output("      → ⚠️  All candidate pools empty, cannot select")
+            return []
 
         recent_text = ""
         if recent_meals:
-            recent_text = f"\nRecent meals (avoid similar):\n" + "\n".join(f"- {m}" for m in recent_meals[:10])
+            recent_text = f"\nRecent meals (avoid if possible):\n" + "\n".join(f"- {m}" for m in recent_meals[:10])
 
-        user_req_text = ""
-        if user_requirements:
-            user_req_text = f"\n⭐ USER'S SPECIFIC REQUIREMENTS (HIGHEST PRIORITY):\n{user_requirements}\n"
+        feedback_text = ""
+        if validation_feedback:
+            feedback_text = f"\n⚠️ PREVIOUS ATTEMPT FAILED - FIX THESE ISSUES:\n{validation_feedback}\n"
 
-        # Show first few actual recipe IDs as examples
-        example_ids = [str(r.id) for r in recipes[:5]]
+        # Build example date keys
+        example_dates = dates[:3] if len(dates) >= 3 else dates
 
-        prompt = f"""Select {num_needed} recipes from the candidates below that would make a varied, balanced meal plan.
+        prompt = f"""Select ONE recipe for EACH day below from that day's candidate pool.
 
-Goals:
-- Add variety (different cuisines, cooking methods, proteins)
-- Avoid repeating similar dishes
-- Create an appealing week of meals
-{user_req_text}
+CRITICAL: Return a JSON object with DATE KEYS, not an array.
+{feedback_text}
 {recent_text}
 
-Candidates ({len(recipes)} recipes):
-{chr(10).join(recipes_text)}
+{chr(10).join(sections)}
 
-CRITICAL INSTRUCTIONS FOR RECIPE ID SELECTION:
-⚠️  IMPORTANT: Recipe IDs are 6-digit numbers like {example_ids[0]}, {example_ids[1]}, {example_ids[2]}
-⚠️  DO NOT use the #N list position numbers (1, 2, 3, etc.)
-⚠️  ONLY use the exact values shown in "Recipe ID:" lines
+RESPONSE FORMAT (exact structure required):
+{{
+  "{example_dates[0]}": <recipe_id>,
+  "{example_dates[1] if len(example_dates) > 1 else 'YYYY-MM-DD'}": <recipe_id>,
+  ...
+}}
 
-Steps:
-1. Choose {num_needed} recipes that meet the requirements
-2. For EACH recipe, copy its EXACT "Recipe ID:" value (6-digit number)
-3. Return ONLY a JSON array of these Recipe ID strings
-4. NO explanations, NO markdown, just the array
-
-Example response format (using actual 6-digit IDs from above):
-["{example_ids[0]}", "{example_ids[1]}", "{example_ids[2] if len(example_ids) > 2 else ''}"]"""
+RULES:
+1. Each day MUST get exactly ONE recipe from its own candidate pool
+2. Recipe ID must be a valid ID from that day's candidates (shown in [ID:XXXXXX])
+3. Cuisine/dietary requirements MUST be matched (they're already filtered in candidates)
+4. Return ONLY the JSON object, no explanation
+5. Use the exact date strings as keys"""
 
         try:
             response = self.client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=500,  # Increased for user requirements context
+                max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -215,7 +245,7 @@ Example response format (using actual 6-digit IDs from above):
             content = response.content[0].text.strip()
 
             if self.verbose:
-                self._verbose_output(f"      → LLM response: {content[:100]}...")
+                self._verbose_output(f"      → LLM response: {content[:150]}...")
 
             # Remove markdown code blocks if present
             if content.startswith("```"):
@@ -224,55 +254,60 @@ Example response format (using actual 6-digit IDs from above):
                     content = content[4:]
             content = content.strip()
 
-            # Extract JSON array if LLM added explanation text
-            # Look for the first [ and last ]
-            if not content.startswith("["):
-                start_idx = content.find("[")
+            # Extract JSON object if LLM added explanation text
+            if not content.startswith("{"):
+                start_idx = content.find("{")
                 if start_idx != -1:
                     content = content[start_idx:]
-            if not content.endswith("]"):
-                end_idx = content.rfind("]")
+            if not content.endswith("}"):
+                end_idx = content.rfind("}")
                 if end_idx != -1:
                     content = content[:end_idx + 1]
 
-            selected_ids = json.loads(content)
-
-            # Convert IDs to strings for comparison (LLM may return strings or ints)
-            selected_ids_str = [str(id) for id in selected_ids]
+            selection_map = json.loads(content)  # {"2025-12-29": 489123, ...}
 
             if self.verbose:
-                self._verbose_output(f"      → Matching IDs: {selected_ids_str}")
-                self._verbose_output(f"      → Available recipe IDs: {[str(r.id) for r in recipes[:5]]}...")
+                self._verbose_output(f"      → Parsed selection: {selection_map}")
 
-            # Return recipes matching selected IDs
-            matched = [r for r in recipes if str(r.id) in selected_ids_str]
+            # Build result list in date order
+            selected = []
+            for req in day_requirements:
+                recipe_id = str(selection_map.get(req.date, ""))
+                pool = candidates_by_date.get(req.date, [])
 
-            if self.verbose:
-                self._verbose_output(f"      → Matched {len(matched)} recipes")
+                # Find recipe in this day's pool
+                match = next((r for r in pool if str(r.id) == recipe_id), None)
 
-            # If LLM hallucinated invalid IDs, fill remaining slots with unused recipes
-            if len(matched) < num_needed:
-                if self.verbose:
-                    self._verbose_output(f"      → ⚠️  LLM returned invalid IDs, filling {num_needed - len(matched)} remaining slots...")
+                if match:
+                    selected.append(match)
+                    if self.verbose:
+                        self._verbose_output(f"      → {req.date}: Selected {match.name}")
+                else:
+                    # Fallback: first valid recipe from pool
+                    if pool:
+                        selected.append(pool[0])
+                        logger.warning(f"Invalid ID {recipe_id} for {req.date}, using fallback: {pool[0].name}")
+                        if self.verbose:
+                            self._verbose_output(f"      → {req.date}: ⚠️  Invalid ID {recipe_id}, fallback to {pool[0].name}")
+                    else:
+                        logger.warning(f"No candidates for {req.date}, skipping")
+                        if self.verbose:
+                            self._verbose_output(f"      → {req.date}: ⚠️  No candidates available")
 
-                # Get recipes that weren't selected
-                matched_ids = {str(r.id) for r in matched}
-                remaining = [r for r in recipes if str(r.id) not in matched_ids]
-
-                # Add enough to reach num_needed
-                needed = num_needed - len(matched)
-                matched.extend(remaining[:needed])
-
-                if self.verbose:
-                    self._verbose_output(f"      → Added: {[r.name[:30] for r in remaining[:needed]]}")
-
-            return matched[:num_needed]
+            return selected
 
         except Exception as e:
-            # Fallback: just return first N recipes
+            # Fallback: first recipe from each pool
             if self.verbose:
-                self._verbose_output(f"LLM selection failed: {e}, using fallback")
-            return recipes[:num_needed]
+                self._verbose_output(f"LLM selection failed: {e}, using deterministic fallback")
+            logger.warning(f"LLM selection failed: {e}")
+
+            selected = []
+            for req in day_requirements:
+                pool = candidates_by_date.get(req.date, [])
+                if pool:
+                    selected.append(pool[0])
+            return selected
 
     def validate_plan(
         self,
@@ -369,6 +404,79 @@ Example response format (using actual 6-digit IDs from above):
                 logger.info(f"  {w}")
 
         return hard_failures, soft_warnings
+
+    def _build_per_day_pools(
+        self,
+        day_requirements: List[DayRequirement],
+        recent_names: List[str],
+        exclude_allergens: List[str],
+        excluded_ids_by_date: Dict[str, Set[int]] = None
+    ) -> Dict[str, List]:
+        """
+        Build per-day candidate pools based on parsed requirements.
+
+        Args:
+            day_requirements: List of DayRequirement objects
+            recent_names: Recently used recipe names (for freshness penalty)
+            exclude_allergens: Allergens to filter out
+            excluded_ids_by_date: Optional dict of recipe IDs to exclude per date (for retry)
+
+        Returns:
+            Dict mapping date -> list of candidate Recipe objects
+        """
+        from tag_canon import CANON_COURSE_EXCLUDE
+
+        POOL_SIZE = 80  # Fetch 80, show top 20 to LLM
+
+        candidates_by_date: Dict[str, List] = {}
+        excluded_ids_by_date = excluded_ids_by_date or {}
+
+        for req in day_requirements:
+            # Build tag requirements
+            include_tags = ["main-dish"]  # Always require main dish for dinner
+            exclude_tags = list(CANON_COURSE_EXCLUDE)  # Exclude desserts, beverages, etc.
+
+            # Add cuisine requirement
+            if req.cuisine:
+                include_tags.append(req.cuisine)
+
+            # Add hard dietary constraints to query
+            for diet in req.dietary_hard:
+                include_tags.append(diet)
+
+            # Get excluded IDs for this date (from previous retry failures)
+            exclude_ids = list(excluded_ids_by_date.get(req.date, set()))
+
+            # Query database for candidates
+            pool = self.assistant.db.search_recipes(
+                include_tags=include_tags,
+                exclude_tags=exclude_tags,
+                exclude_ids=[str(id) for id in exclude_ids] if exclude_ids else None,
+                limit=POOL_SIZE
+            )
+
+            # Apply allergen filtering using structured ingredients
+            if exclude_allergens:
+                pool = [
+                    r for r in pool
+                    if r.has_structured_ingredients()
+                    and not any(r.has_allergen(a) for a in exclude_allergens)
+                ]
+
+            # Apply freshness penalty: deprioritize recently used recipes
+            if recent_names:
+                recent_set = set(recent_names)
+                fresh = [r for r in pool if r.name not in recent_set]
+                stale = [r for r in pool if r.name in recent_set]
+                pool = fresh + stale  # Fresh first, then stale as backup
+
+            candidates_by_date[req.date] = pool
+
+            if self.verbose:
+                tags_str = ", ".join(include_tags)
+                self._verbose_output(f"      → {req.date}: {len(pool)} candidates ({tags_str})")
+
+        return candidates_by_date
 
     def _llm_semantic_match(self, requirements: str, category: str) -> bool:
         """
@@ -972,86 +1080,123 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     if self.verbose:
                         self._verbose_output(f"      → Planning {num_days} days starting {dates[0]}")
 
-                # 2. SQL search for candidates
-                # Default to "dinner" for broad coverage (this is a dinner planning bot)
-                search_query = tool_input.get("search_query", "dinner")
-                candidates = self.assistant.db.search_recipes(
-                    query=search_query,
-                    max_time=tool_input.get("max_time"),
-                    limit=100
-                )
-
-                if self.verbose:
-                    self._verbose_output(f"      → SQL search found {len(candidates)} candidates for '{search_query}'")
-
-                if not candidates:
-                    return f"No recipes found matching '{search_query}'. Try different search terms."
-
-                # 3. Filter by allergens using structured ingredients
-                exclude_allergens = tool_input.get("exclude_allergens", [])
-                filtered = [
-                    r for r in candidates
-                    if r.has_structured_ingredients()
-                    and not any(r.has_allergen(a) for a in exclude_allergens)
-                ]
-
-                if self.verbose:
-                    if exclude_allergens:
-                        self._verbose_output(f"      → Filtered to {len(filtered)} recipes without {', '.join(exclude_allergens)}")
-                    else:
-                        self._verbose_output(f"      → All {len(filtered)} have structured ingredients")
-
-                if not filtered:
-                    return f"Found {len(candidates)} recipes, but none without {', '.join(exclude_allergens)}. Try relaxing constraints."
-
-                if len(filtered) < num_days:
-                    return f"Only found {len(filtered)} recipes matching all constraints, need {num_days}. Try relaxing constraints or reducing days."
-
-                # 4. LLM selects with variety
-                recent_meals = self.assistant.db.get_meal_history(user_id=self.user_id, weeks_back=2)
-                recent_names = [m.recipe.name for m in recent_meals] if recent_meals else []
-
-                # Get user's original request from conversation history
+                # 2. Get user message and parse requirements
                 user_message = None
                 if self.conversation_history:
-                    # Find the most recent user message
                     for msg in reversed(self.conversation_history):
                         if msg["role"] == "user":
                             user_message = msg["content"]
                             break
 
-                # Always emit progress for LLM selection (this is a 3-5 second operation)
-                self._verbose_output(f"Selecting {num_days} varied recipes from {len(filtered)} options...")
-
-                if self.verbose:
-                    if user_message:
-                        self._verbose_output(f"      → Passing user requirements to selector: '{user_message[:60]}...'")
-
-                selected = self._select_recipes_with_llm(filtered, num_days, recent_names, user_message)
-
-                # Always emit completion progress
-                self._verbose_output(f"Selected: {', '.join([r.name[:25] for r in selected[:3]])}...")
-
-                if self.verbose:
-                    self._verbose_output(f"      → Full selection: {', '.join([r.name[:30] for r in selected])}")
-
-                # 4a. Parse requirements and validate selection (PR1 - logging only)
                 day_requirements = parse_requirements(user_message or "", dates)
                 if self.verbose:
                     self._verbose_output(f"      → Parsed requirements: {[str(r) for r in day_requirements]}")
 
-                hard_failures, soft_warnings = self.validate_plan(selected, day_requirements)
-                if hard_failures:
-                    # PR1: Log failures but don't retry yet (observability only)
-                    logger.warning(f"[VALIDATION] {len(hard_failures)} hard failures detected (PR1 - logging only)")
-                    for f in hard_failures:
-                        self._verbose_output(f"      ⚠️  {f}")
-                if soft_warnings and self.verbose:
-                    for w in soft_warnings:
-                        self._verbose_output(f"      ℹ️  {w}")
+                # 3. Get recent meals for freshness penalty
+                recent_meals = self.assistant.db.get_meal_history(user_id=self.user_id, weeks_back=2)
+                recent_names = [m.recipe.name for m in recent_meals] if recent_meals else []
 
-                # 4b. Store unselected recipes as backups for quick swaps
-                backups = [r for r in filtered if r not in selected][:20]  # Top 20 backups
+                # 4. Get allergen exclusions
+                exclude_allergens = tool_input.get("exclude_allergens", [])
+
+                # 5. Selection with retry loop
+                MAX_RETRIES = 2
+                excluded_ids_by_date: Dict[str, Set[int]] = {d: set() for d in dates}
+                validation_feedback = None
+                selected = []
+                candidates_by_date = {}
+
+                for attempt in range(MAX_RETRIES + 1):
+                    # Build per-day candidate pools (filtering out excluded IDs from previous attempts)
+                    self._verbose_output(f"Building candidate pools{' (retry ' + str(attempt) + ')' if attempt > 0 else ''}...")
+
+                    candidates_by_date = self._build_per_day_pools(
+                        day_requirements,
+                        recent_names,
+                        exclude_allergens,
+                        excluded_ids_by_date if attempt > 0 else None
+                    )
+
+                    # Check if we have enough candidates
+                    empty_pools = [req.date for req in day_requirements if not candidates_by_date.get(req.date)]
+                    if empty_pools:
+                        if attempt == 0:
+                            return f"No recipes found for dates: {', '.join(empty_pools)}. Try relaxing cuisine/dietary constraints."
+                        else:
+                            # On retry, use fallback for empty pools
+                            logger.warning(f"Empty pools on retry for: {empty_pools}")
+
+                    total_candidates = sum(len(pool) for pool in candidates_by_date.values())
+                    self._verbose_output(f"Selecting {num_days} recipes from {total_candidates} candidates...")
+
+                    # LLM selection with per-day pools
+                    selected = self._select_recipes_with_llm(
+                        candidates_by_date,
+                        day_requirements,
+                        recent_names,
+                        validation_feedback
+                    )
+
+                    if not selected:
+                        return "Could not select any recipes. Try different constraints."
+
+                    # Always emit completion progress
+                    self._verbose_output(f"Selected: {', '.join([r.name[:25] for r in selected[:3]])}...")
+
+                    if self.verbose:
+                        self._verbose_output(f"      → Full selection: {', '.join([r.name[:30] for r in selected])}")
+
+                    # Validate selection
+                    hard_failures, soft_warnings = self.validate_plan(selected, day_requirements)
+
+                    # Log soft warnings (but don't retry for them)
+                    if soft_warnings and self.verbose:
+                        for w in soft_warnings:
+                            self._verbose_output(f"      ℹ️  {w}")
+
+                    # Check for hard failures
+                    if not hard_failures:
+                        if attempt > 0:
+                            self._verbose_output(f"      ✓ Validation passed after {attempt} retry(s)")
+                        break  # Success!
+
+                    # Hard failures - prepare for retry or give up
+                    if attempt < MAX_RETRIES:
+                        # Build feedback for retry
+                        validation_feedback = ""
+                        for f in hard_failures:
+                            validation_feedback += f"- {f.date}: {f.recipe_name} - {f.reason}\n"
+                            # Add failed recipe ID to exclusion list for that date
+                            excluded_ids_by_date[f.date].add(f.recipe_id)
+
+                        logger.info(f"Retry {attempt + 1}/{MAX_RETRIES} after {len(hard_failures)} hard failures")
+                        self._verbose_output(f"      ⚠️  {len(hard_failures)} validation failures, retrying...")
+                        for f in hard_failures:
+                            self._verbose_output(f"         - {f}")
+                    else:
+                        # Max retries reached - log failures but continue with best effort
+                        logger.warning(f"Max retries reached with {len(hard_failures)} hard failures, continuing with best effort")
+                        self._verbose_output(f"      ⚠️  Max retries reached, {len(hard_failures)} failures remain:")
+                        for f in hard_failures:
+                            self._verbose_output(f"         - {f}")
+
+                        # Use deterministic fallback for failed dates
+                        failed_dates = {f.date for f in hard_failures}
+                        for i, req in enumerate(day_requirements):
+                            if req.date in failed_dates and i < len(selected):
+                                pool = candidates_by_date.get(req.date, [])
+                                # Filter out already-excluded IDs
+                                valid_pool = [r for r in pool if r.id not in excluded_ids_by_date[req.date]]
+                                if valid_pool:
+                                    selected[i] = valid_pool[0]
+                                    logger.info(f"Deterministic fallback for {req.date}: {valid_pool[0].name}")
+
+                # 6. Store backup recipes from pools for quick swaps
+                all_candidates = []
+                for pool in candidates_by_date.values():
+                    all_candidates.extend(pool)
+                selected_ids = {r.id for r in selected}
+                backups = [r for r in all_candidates if r.id not in selected_ids][:20]
                 if self.verbose and backups:
                     self._verbose_output(f"      → Stored {len(backups)} backup recipes for quick swaps")
 
@@ -1066,9 +1211,9 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     for date, recipe in zip(dates, selected)
                 ]
 
-                # 6. Create and save MealPlan
+                # 7. Create and save MealPlan
                 self._verbose_output("Saving your meal plan...")
-                backup_dict = {search_query: backups} if backups and search_query else {}
+                backup_dict = {"mixed": backups} if backups else {}
                 plan = MealPlan(
                     week_of=week_of,  # Use week start from UI or first date
                     meals=meals,
