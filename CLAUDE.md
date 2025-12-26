@@ -206,6 +206,37 @@ Shopping LLM regenerates list (~3-5s parallel)
 python3 src/web/app.py  # http://localhost:5000
 ```
 
+### ✅ Phase 5: Menu Generation Latency Optimization - Complete (2025-12-26)
+**Problem:** Menu generation was taking 60+ seconds in production for 7-day meal plans due to `ORDER BY RANDOM()` causing full table scans on 492K recipes.
+
+**What's Complete:**
+- ✅ **Rowid Pre-Sampling** - Replace ORDER BY RANDOM() with 2-query pattern
+  - Fetch matching rowids (fast index scan)
+  - Sample in Python with seeded RNG for week-reproducible variety
+  - SQLite PRAGMAs for read-only optimization (query_only, cache_size, temp_store)
+
+- ✅ **Normalized recipe_tags Table** - Index-based tag lookups instead of LIKE '%tag%'
+  - `recipe_tags(recipe_id, tag)` with 8.3M rows (492K recipes × ~17 avg tags)
+  - Smart query ordering: smallest tag result set first + EXISTS clauses
+  - Auto-detection: falls back to LIKE queries if table doesn't exist
+
+**Performance Results:**
+| Metric | Before | After |
+|--------|--------|-------|
+| 5-day plan | 60+ sec | **4.7 sec** |
+| Single pool query | 1-14 sec | **130-570ms** |
+| Improvement | - | **12x faster** |
+
+**Key Files:**
+- `src/data/database.py:569-678` - `search_recipes_sampled()` with rowid pre-sampling
+- `src/data/database.py:680-781` - `_search_with_recipe_tags()` with smart tag ordering
+- `src/chatbot.py:425-490` - Per-day pool building with seeded sampling
+- `scripts/create_recipe_tags.py` - Migration script to build normalized table
+
+**Instrumentation:**
+- `[POOL]` log lines show per-query timing and method (recipe_tags vs like)
+- `[PLAN-TIMING]` log lines show total plan generation breakdown
+
 ### 🤔 Under Consideration - Side Dishes
 **User Request:** "can you add a salad side dish to the honey garlic chicken"
 

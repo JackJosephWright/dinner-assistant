@@ -566,6 +566,220 @@ class DatabaseInterface:
 
             return recipes
 
+    def search_recipes_sampled(
+        self,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
+        exclude_ids: Optional[List[str]] = None,
+        limit: int = 80,
+        seed: Optional[int] = None,
+    ) -> List[Recipe]:
+        """
+        Search recipes with seeded random sampling.
+
+        Phase 2: Uses normalized recipe_tags table for fast index-based lookups.
+        Falls back to LIKE queries if recipe_tags table doesn't exist.
+
+        Args:
+            include_tags: Tags that recipes MUST have
+            exclude_tags: Tags that recipes must NOT have
+            exclude_ids: Recipe IDs to exclude
+            limit: Maximum number of results
+            seed: RNG seed for reproducible sampling (e.g., hash(user_id + week_of))
+                  If None, uses random sampling (not reproducible)
+
+        Returns:
+            List of matching Recipe objects
+        """
+        import random
+        import time
+
+        start_time = time.time()
+        use_recipe_tags = False
+
+        with sqlite3.connect(self.recipes_db) as conn:
+            # Apply read-only optimizations
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA cache_size = -64000")  # 64MB cache
+            conn.execute("PRAGMA temp_store = MEMORY")
+
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Check if recipe_tags table exists (Phase 2)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='recipe_tags'")
+            use_recipe_tags = cursor.fetchone() is not None
+
+            if use_recipe_tags and include_tags:
+                # Phase 2: Use optimized recipe_tags index queries
+                candidates = self._search_with_recipe_tags(
+                    cursor, include_tags, exclude_tags, exclude_ids, limit, seed
+                )
+                if candidates is not None:
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    logger.info(f"[POOL] tags={include_tags} rows={len(candidates)} "
+                               f"elapsed_ms={elapsed_ms:.1f} seed={seed} method=recipe_tags")
+                    return candidates
+                # Fall through to LIKE if recipe_tags query failed
+
+            # Phase 1 fallback: LIKE-based queries with rowid sampling
+            sql = "SELECT rowid FROM recipes WHERE 1=1"
+            params = []
+
+            if include_tags:
+                for tag in include_tags:
+                    sql += " AND tags LIKE ?"
+                    params.append(f"%{tag}%")
+
+            if exclude_tags:
+                for tag in exclude_tags:
+                    sql += " AND tags NOT LIKE ?"
+                    params.append(f"%{tag}%")
+
+            if exclude_ids:
+                placeholders = ",".join(["?" for _ in exclude_ids])
+                sql += f" AND id NOT IN ({placeholders})"
+                params.extend(exclude_ids)
+
+            cursor.execute(sql, params)
+            all_rowids = [r[0] for r in cursor.fetchall()]
+
+            if not all_rowids:
+                logger.info(f"[POOL] tags={include_tags} rows=0 total_match=0 "
+                           f"elapsed_ms={(time.time()-start_time)*1000:.1f} seed={seed} method=like")
+                return []
+
+            # Sample with seeded RNG for reproducibility
+            rng = random.Random(seed) if seed is not None else random.Random()
+            sample_size = min(limit, len(all_rowids))
+            sampled_rowids = rng.sample(all_rowids, sample_size)
+
+            # Fetch full records by rowid
+            placeholders = ",".join(["?" for _ in sampled_rowids])
+            cursor.execute(
+                f"SELECT * FROM recipes WHERE rowid IN ({placeholders})",
+                sampled_rowids
+            )
+            rows = cursor.fetchall()
+
+            recipes = []
+            for row in rows:
+                try:
+                    recipe = self._row_to_recipe(row)
+                    recipes.append(recipe)
+                except Exception as e:
+                    logger.warning(f"Error parsing recipe {row['id']}: {e}")
+                    continue
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.info(f"[POOL] tags={include_tags} rows={len(recipes)} "
+                       f"total_match={len(all_rowids)} elapsed_ms={elapsed_ms:.1f} seed={seed} method=like")
+
+            return recipes
+
+    def _search_with_recipe_tags(
+        self,
+        cursor: sqlite3.Cursor,
+        include_tags: List[str],
+        exclude_tags: Optional[List[str]],
+        exclude_ids: Optional[List[str]],
+        limit: int,
+        seed: Optional[int],
+    ) -> Optional[List[Recipe]]:
+        """
+        Phase 2: Search using normalized recipe_tags table.
+
+        Uses smart tag ordering (smallest result set first) with EXISTS
+        for 10-12x faster queries compared to LIKE.
+        """
+        import random
+
+        try:
+            # Get counts for each include tag to find smallest
+            tag_counts = {}
+            for tag in include_tags:
+                cursor.execute("SELECT COUNT(*) FROM recipe_tags WHERE tag = ?", [tag])
+                tag_counts[tag] = cursor.fetchone()[0]
+
+            # Order by count (smallest first for best performance)
+            sorted_tags = sorted(include_tags, key=lambda t: tag_counts[t])
+            primary_tag = sorted_tags[0]
+            other_tags = sorted_tags[1:]
+
+            # Build query: primary tag + EXISTS for others
+            params = [primary_tag]
+
+            # EXISTS clauses for additional tags
+            exists_clauses = ""
+            if other_tags:
+                exists_parts = []
+                for tag in other_tags:
+                    exists_parts.append(
+                        "EXISTS (SELECT 1 FROM recipe_tags rt_sub "
+                        "WHERE rt_sub.recipe_id = rt.recipe_id AND rt_sub.tag = ?)"
+                    )
+                    params.append(tag)
+                exists_clauses = " AND " + " AND ".join(exists_parts)
+
+            # NOT EXISTS for exclude tags
+            not_exists_clauses = ""
+            if exclude_tags:
+                not_exists_parts = []
+                for tag in exclude_tags:
+                    not_exists_parts.append(
+                        "NOT EXISTS (SELECT 1 FROM recipe_tags rt_excl "
+                        "WHERE rt_excl.recipe_id = rt.recipe_id AND rt_excl.tag = ?)"
+                    )
+                    params.append(tag)
+                not_exists_clauses = " AND " + " AND ".join(not_exists_parts)
+
+            # Exclude IDs clause
+            exclude_ids_clause = ""
+            if exclude_ids:
+                placeholders = ",".join(["?" for _ in exclude_ids])
+                exclude_ids_clause = f" AND rt.recipe_id NOT IN ({placeholders})"
+                params.extend(exclude_ids)
+
+            # Fetch candidates (more than limit to allow for sampling variety)
+            fetch_limit = min(limit * 5, 500)  # Get up to 5x limit for better sampling
+            params.append(fetch_limit)
+
+            sql = f"""
+                SELECT r.*
+                FROM recipe_tags rt
+                JOIN recipes r ON r.id = rt.recipe_id
+                WHERE rt.tag = ?
+                {exists_clauses}
+                {not_exists_clauses}
+                {exclude_ids_clause}
+                LIMIT ?
+            """
+
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+            if not rows:
+                return []
+
+            # Parse all candidate recipes
+            candidates = []
+            for row in rows:
+                try:
+                    recipe = self._row_to_recipe(row)
+                    candidates.append(recipe)
+                except Exception as e:
+                    logger.warning(f"Error parsing recipe {row['id']}: {e}")
+                    continue
+
+            # Sample from candidates
+            rng = random.Random(seed) if seed is not None else random.Random()
+            sample_size = min(limit, len(candidates))
+            return rng.sample(candidates, sample_size)
+
+        except Exception as e:
+            logger.warning(f"recipe_tags query failed, falling back to LIKE: {e}")
+            return None  # Signal to fall back to LIKE
+
     def get_recipe(self, recipe_id: str) -> Optional[Recipe]:
         """
         Get a specific recipe by ID.

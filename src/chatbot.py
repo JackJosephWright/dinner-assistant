@@ -9,12 +9,19 @@ import os
 import sys
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+# Verification report config constants
+POOL_SIZE = 80  # Fetch 80 candidates per day
+LLM_CANDIDATES_SHOWN = 20  # Show top 20 to LLM
+MAX_RETRIES = 2  # Maximum retry attempts
+STAGE2_MODEL = "claude-sonnet-4-5-20250929"  # Model for recipe selection
 
 # Load environment variables from .env file
 load_dotenv()
@@ -231,12 +238,24 @@ RULES:
 4. Return ONLY the JSON object, no explanation
 5. Use the exact date strings as keys"""
 
+        # Log Stage 2 prompt summary
+        logger.info(f"[STAGE2] Model: {STAGE2_MODEL}")
+        logger.info(f"[STAGE2] Prompt summary: {len(dates)} days, date-keyed JSON required")
+        for req in day_requirements:
+            pool = candidates_by_date.get(req.date, [])
+            logger.info(f"[STAGE2] {req.date}: showing {min(len(pool), LLM_CANDIDATES_SHOWN)}/{len(pool)} candidates to LLM")
+        if validation_feedback:
+            logger.info(f"[STAGE2] Retry feedback included: {len(validation_feedback)} chars")
+
         try:
+            llm_start = time.time()
             response = self.client.messages.create(
-                model="claude-sonnet-4-5-20250929",
+                model=STAGE2_MODEL,
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}]
             )
+            llm_time = time.time() - llm_start
+            logger.info(f"[STAGE2] LLM call completed in {llm_time:.3f}s")
 
             # Extract JSON from response
             content = response.content[0].text.strip()
@@ -262,6 +281,7 @@ RULES:
                     content = content[:end_idx + 1]
 
             selection_map = json.loads(content)  # {"2025-12-29": 489123, ...}
+            logger.info(f"[LLM] Selection map: {selection_map}")
 
             if self.verbose:
                 self._verbose_output(f"      → Parsed selection: {selection_map}")
@@ -407,28 +427,41 @@ RULES:
         day_requirements: List[DayRequirement],
         recent_names: List[str],
         exclude_allergens: List[str],
-        excluded_ids_by_date: Dict[str, Set[int]] = None
-    ) -> Dict[str, List]:
+        excluded_ids_by_date: Dict[str, Set[int]] = None,
+        user_id: str = None,
+        week_of: str = None,
+    ) -> Tuple[Dict[str, List], Dict[str, float]]:
         """
         Build per-day candidate pools based on parsed requirements.
+
+        Uses seeded random sampling for reproducible results within a week
+        while providing variety across weeks (Phase 1 latency fix).
 
         Args:
             day_requirements: List of DayRequirement objects
             recent_names: Recently used recipe names (for freshness penalty)
             exclude_allergens: Allergens to filter out
             excluded_ids_by_date: Optional dict of recipe IDs to exclude per date (for retry)
+            user_id: User identifier for seed generation
+            week_of: Week start date for seed generation
 
         Returns:
-            Dict mapping date -> list of candidate Recipe objects
+            Tuple of (candidates_by_date dict, timing_by_date dict)
         """
         from tag_canon import CANON_COURSE_EXCLUDE
 
-        POOL_SIZE = 80  # Fetch 80, show top 20 to LLM
-
         candidates_by_date: Dict[str, List] = {}
+        timing_by_date: Dict[str, float] = {}
         excluded_ids_by_date = excluded_ids_by_date or {}
 
-        for req in day_requirements:
+        # Generate stable seed for this user + week (Phase 1: seeded sampling)
+        seed_base = hash(f"{user_id or 'default'}_{week_of or 'unknown'}") % (2**31)
+
+        logger.info(f"[POOL-BUILD] Starting per-day pool construction (POOL_SIZE={POOL_SIZE}, seed_base={seed_base})")
+
+        for day_idx, req in enumerate(day_requirements):
+            pool_start = time.time()
+
             # Build tag requirements
             include_tags = ["main-dish"]  # Always require main dish for dinner
             exclude_tags = list(CANON_COURSE_EXCLUDE)  # Exclude desserts, beverages, etc.
@@ -444,12 +477,16 @@ RULES:
             # Get excluded IDs for this date (from previous retry failures)
             exclude_ids = list(excluded_ids_by_date.get(req.date, set()))
 
-            # Query database for candidates
-            pool = self.assistant.db.search_recipes(
+            # Per-day seed variation (same week, different days get different samples)
+            day_seed = seed_base + day_idx
+
+            # Query database using seeded sampling (Phase 1 latency fix)
+            pool = self.assistant.db.search_recipes_sampled(
                 include_tags=include_tags,
                 exclude_tags=exclude_tags,
                 exclude_ids=[str(id) for id in exclude_ids] if exclude_ids else None,
-                limit=POOL_SIZE
+                limit=POOL_SIZE,
+                seed=day_seed,
             )
 
             # Apply allergen filtering using structured ingredients
@@ -461,19 +498,33 @@ RULES:
                 ]
 
             # Apply freshness penalty: deprioritize recently used recipes
+            freshness_applied = False
             if recent_names:
                 recent_set = set(recent_names)
                 fresh = [r for r in pool if r.name not in recent_set]
                 stale = [r for r in pool if r.name in recent_set]
+                if stale:
+                    freshness_applied = True
                 pool = fresh + stale  # Fresh first, then stale as backup
 
             candidates_by_date[req.date] = pool
+            pool_time = time.time() - pool_start
+            timing_by_date[req.date] = pool_time
+
+            # Post-processing logging (query logging handled by search_recipes_sampled)
+            if freshness_applied:
+                logger.info(f"[POOL-POST] {req.date}: freshness_penalty_applied=True")
+            if exclude_ids:
+                logger.info(f"[POOL-POST] {req.date}: excluded_ids={len(exclude_ids)}")
 
             if self.verbose:
                 tags_str = ", ".join(include_tags)
                 self._verbose_output(f"      → {req.date}: {len(pool)} candidates ({tags_str})")
 
-        return candidates_by_date
+        total_candidates = sum(len(p) for p in candidates_by_date.values())
+        logger.info(f"[POOL-BUILD] Complete: {total_candidates} total candidates across {len(day_requirements)} days")
+
+        return candidates_by_date, timing_by_date
 
     def _llm_semantic_match(self, requirements: str, category: str) -> bool:
         """
@@ -1078,6 +1129,7 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                         self._verbose_output(f"      → Planning {num_days} days starting {dates[0]}")
 
                 # 2. Get user message and parse requirements
+                plan_start_time = time.time()
                 user_message = None
                 if self.conversation_history:
                     for msg in reversed(self.conversation_history):
@@ -1085,7 +1137,16 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                             user_message = msg["content"]
                             break
 
+                parse_start = time.time()
                 day_requirements = parse_requirements(user_message or "", dates)
+                parse_time = time.time() - parse_start
+
+                # Log parsed requirements for verification report
+                logger.info(f"[PARSE] parse_requirements completed in {parse_time:.3f}s")
+                logger.info(f"[PARSE] Input message: {user_message}")
+                for req in day_requirements:
+                    logger.info(f"[PARSE] {req.date}: cuisine={req.cuisine}, dietary_hard={req.dietary_hard}, dietary_soft={req.dietary_soft}, surprise={req.surprise}, unhandled={req.unhandled}")
+
                 if self.verbose:
                     self._verbose_output(f"      → Parsed requirements: {[str(r) for r in day_requirements]}")
 
@@ -1097,26 +1158,34 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 exclude_allergens = tool_input.get("exclude_allergens", [])
 
                 # 5. Selection with retry loop
-                MAX_RETRIES = 2
+                logger.info(f"[RETRY-LOOP] Starting selection with MAX_RETRIES={MAX_RETRIES}")
                 excluded_ids_by_date: Dict[str, Set[int]] = {d: set() for d in dates}
                 validation_feedback = None
                 selected = []
                 candidates_by_date = {}
+                pool_timing = {}
+                total_retry_time = 0.0
 
                 for attempt in range(MAX_RETRIES + 1):
+                    attempt_start = time.time()
+                    logger.info(f"[RETRY-LOOP] === Attempt {attempt} ===")
+
                     # Build per-day candidate pools (filtering out excluded IDs from previous attempts)
                     self._verbose_output(f"Building candidate pools{' (retry ' + str(attempt) + ')' if attempt > 0 else ''}...")
 
-                    candidates_by_date = self._build_per_day_pools(
+                    candidates_by_date, pool_timing = self._build_per_day_pools(
                         day_requirements,
                         recent_names,
                         exclude_allergens,
-                        excluded_ids_by_date if attempt > 0 else None
+                        excluded_ids_by_date if attempt > 0 else None,
+                        user_id=self.user_id,
+                        week_of=week_of,
                     )
 
                     # Check if we have enough candidates
                     empty_pools = [req.date for req in day_requirements if not candidates_by_date.get(req.date)]
                     if empty_pools:
+                        logger.info(f"[RETRY-LOOP] Empty pools detected: {empty_pools}")
                         if attempt == 0:
                             return f"No recipes found for dates: {', '.join(empty_pools)}. Try relaxing cuisine/dietary constraints."
                         else:
@@ -1144,21 +1213,33 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                         self._verbose_output(f"      → Full selection: {', '.join([r.name[:30] for r in selected])}")
 
                     # Validate selection
+                    validate_start = time.time()
                     hard_failures, soft_warnings = self.validate_plan(selected, day_requirements)
+                    validate_time = time.time() - validate_start
+                    logger.info(f"[VALIDATE] validate_plan completed in {validate_time:.3f}s")
+                    logger.info(f"[VALIDATE] hard_failures={len(hard_failures)}, soft_warnings={len(soft_warnings)}")
 
                     # Log soft warnings (but don't retry for them)
                     if soft_warnings and self.verbose:
                         for w in soft_warnings:
                             self._verbose_output(f"      ℹ️  {w}")
 
+                    attempt_time = time.time() - attempt_start
+                    logger.info(f"[RETRY-LOOP] Attempt {attempt} completed in {attempt_time:.3f}s")
+
                     # Check for hard failures
                     if not hard_failures:
                         if attempt > 0:
                             self._verbose_output(f"      ✓ Validation passed after {attempt} retry(s)")
+                            logger.info(f"[RETRY-LOOP] Success after {attempt} retry(s)")
+                        else:
+                            logger.info(f"[RETRY-LOOP] Success on first attempt")
                         break  # Success!
 
                     # Hard failures - prepare for retry or give up
                     if attempt < MAX_RETRIES:
+                        total_retry_time += attempt_time
+
                         # Build feedback for retry
                         validation_feedback = ""
                         for f in hard_failures:
@@ -1166,13 +1247,16 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                             # Add failed recipe ID to exclusion list for that date
                             excluded_ids_by_date[f.date].add(f.recipe_id)
 
-                        logger.info(f"Retry {attempt + 1}/{MAX_RETRIES} after {len(hard_failures)} hard failures")
+                        logger.info(f"[RETRY-LOOP] Retry {attempt + 1}/{MAX_RETRIES} after {len(hard_failures)} hard failures")
+                        logger.info(f"[RETRY-LOOP] Excluded IDs by date: {dict((k, list(v)) for k, v in excluded_ids_by_date.items() if v)}")
+                        logger.info(f"[RETRY-LOOP] Validation feedback:\n{validation_feedback}")
                         self._verbose_output(f"      ⚠️  {len(hard_failures)} validation failures, retrying...")
                         for f in hard_failures:
                             self._verbose_output(f"         - {f}")
                     else:
                         # Max retries reached - log failures but continue with best effort
-                        logger.warning(f"Max retries reached with {len(hard_failures)} hard failures, continuing with best effort")
+                        total_retry_time += attempt_time
+                        logger.warning(f"[RETRY-LOOP] Max retries reached with {len(hard_failures)} hard failures, using deterministic fallback")
                         self._verbose_output(f"      ⚠️  Max retries reached, {len(hard_failures)} failures remain:")
                         for f in hard_failures:
                             self._verbose_output(f"         - {f}")
@@ -1187,6 +1271,30 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                                 if valid_pool:
                                     selected[i] = valid_pool[0]
                                     logger.info(f"Deterministic fallback for {req.date}: {valid_pool[0].name}")
+
+                # Log final selected plan summary
+                logger.info(f"[FINAL-PLAN] === Final Selected Plan Summary ===")
+                for date, recipe in zip(dates, selected):
+                    logger.info(f"[FINAL-PLAN] {date}: id={recipe.id}, name={recipe.name}")
+                    logger.info(f"[FINAL-PLAN] {date}: tags={recipe.tags[:10]}")
+
+                # Log timing summary
+                total_plan_time = time.time() - plan_start_time
+                pool_total_time = sum(pool_timing.values())
+
+                # Compact single-line summary for prod monitoring (Phase 1 instrumentation)
+                logger.info(f"[PLAN-TIMING] days={num_days} pool_ms={pool_total_time*1000:.1f} "
+                           f"stage2_ms={(total_plan_time - pool_total_time - parse_time)*1000:.1f} "
+                           f"total_ms={total_plan_time*1000:.1f} retries={attempt}")
+
+                # Detailed timing breakdown
+                logger.info(f"[TIMING] === Timing Summary ===")
+                logger.info(f"[TIMING] parse_requirements: {parse_time:.3f}s")
+                logger.info(f"[TIMING] build_per_day_pools total: {pool_total_time:.3f}s")
+                for date, t in pool_timing.items():
+                    logger.info(f"[TIMING] build_per_day_pools[{date}]: {t:.3f}s")
+                logger.info(f"[TIMING] total_retry_time: {total_retry_time:.3f}s")
+                logger.info(f"[TIMING] plan_meals_smart total: {total_plan_time:.3f}s (so far)")
 
                 # 6. Store backup recipes from pools for quick swaps
                 all_candidates = []
@@ -1217,7 +1325,10 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     preferences_applied=exclude_allergens,  # Track what allergens were avoided
                     backup_recipes=backup_dict  # Store backups for instant swaps
                 )
+                persist_start = time.time()
                 plan_id = self.assistant.db.save_meal_plan(plan, user_id=self.user_id)
+                persist_time = time.time() - persist_start
+                logger.info(f"[PERSIST] Saved meal plan {plan_id} in {persist_time:.3f}s")
                 self.current_meal_plan_id = plan_id
 
                 # Cache the plan in memory for follow-up questions
