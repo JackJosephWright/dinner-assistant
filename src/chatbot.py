@@ -8,9 +8,13 @@ Uses Claude via Anthropic API with MCP tool access.
 import os
 import sys
 import json
-from typing import List, Dict, Any
+import logging
+from dataclasses import dataclass
+from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,6 +23,28 @@ from anthropic import Anthropic
 
 from main import MealPlanningAssistant
 from data.models import PlannedMeal, MealPlan
+from tag_canon import (
+    CANON_CUISINES,
+    CANON_DIETARY_HARD,
+    CANON_DIETARY_SOFT,
+    CANON_COURSE_MAIN,
+    CANON_COURSE_EXCLUDE,
+    TAG_SYNONYMS,
+)
+from requirements_parser import parse_requirements, DayRequirement
+
+
+@dataclass
+class ValidationFailure:
+    """Records a validation failure for debugging and retry logic."""
+    date: str
+    recipe_id: int
+    recipe_name: str
+    requirement: str
+    reason: str
+
+    def __str__(self) -> str:
+        return f"{self.date}: {self.recipe_name} - {self.reason}"
 
 
 class MealPlanningChatbot:
@@ -247,6 +273,102 @@ Example response format (using actual 6-digit IDs from above):
             if self.verbose:
                 self._verbose_output(f"LLM selection failed: {e}, using fallback")
             return recipes[:num_needed]
+
+    def validate_plan(
+        self,
+        selected_recipes: List,
+        day_requirements: List[DayRequirement]
+    ) -> Tuple[List[ValidationFailure], List[str]]:
+        """
+        Validate that selected recipes match day requirements.
+
+        Args:
+            selected_recipes: List of Recipe objects (in date order)
+            day_requirements: List of DayRequirement objects (in date order)
+
+        Returns:
+            Tuple of (hard_failures, soft_warnings)
+            - hard_failures: List of ValidationFailure that trigger retry
+            - soft_warnings: List of warning strings for logging only
+        """
+        hard_failures = []
+        soft_warnings = []
+
+        for recipe, req in zip(selected_recipes, day_requirements):
+            recipe_tags_set = set(recipe.tags) if recipe.tags else set()
+
+            # Skip validation for surprise days
+            if req.surprise:
+                continue
+
+            # HARD: Check cuisine requirement
+            if req.cuisine:
+                # Check direct match and synonyms
+                cuisine_variants = TAG_SYNONYMS.get(req.cuisine, {req.cuisine})
+                if not (recipe_tags_set & cuisine_variants) and req.cuisine not in recipe_tags_set:
+                    hard_failures.append(ValidationFailure(
+                        date=req.date,
+                        recipe_id=recipe.id,
+                        recipe_name=recipe.name,
+                        requirement=f"cuisine={req.cuisine}",
+                        reason=f"Tags {list(recipe_tags_set)[:5]} missing '{req.cuisine}'"
+                    ))
+
+            # HARD: Check hard dietary requirements (vegetarian, vegan)
+            for diet in req.dietary_hard:
+                diet_variants = TAG_SYNONYMS.get(diet, {diet})
+                if not (recipe_tags_set & diet_variants) and diet not in recipe_tags_set:
+                    hard_failures.append(ValidationFailure(
+                        date=req.date,
+                        recipe_id=recipe.id,
+                        recipe_name=recipe.name,
+                        requirement=f"dietary_hard={diet}",
+                        reason=f"Missing hard constraint '{diet}'"
+                    ))
+
+            # SOFT: Check soft dietary requirements (kid-friendly, healthy, etc.)
+            for diet in req.dietary_soft:
+                diet_variants = TAG_SYNONYMS.get(diet, {diet})
+                if not (recipe_tags_set & diet_variants) and diet not in recipe_tags_set:
+                    soft_warnings.append(
+                        f"[SOFT] {req.date}: {recipe.name} missing preference '{diet}'"
+                    )
+
+            # HARD: Dinner must be main-dish (reject desserts/drinks)
+            has_main_dish = bool(recipe_tags_set & CANON_COURSE_MAIN)
+            has_excluded = bool(recipe_tags_set & CANON_COURSE_EXCLUDE)
+
+            if not has_main_dish and has_excluded:
+                hard_failures.append(ValidationFailure(
+                    date=req.date,
+                    recipe_id=recipe.id,
+                    recipe_name=recipe.name,
+                    requirement="main-dish",
+                    reason=f"Recipe has {recipe_tags_set & CANON_COURSE_EXCLUDE}, not suitable for dinner"
+                ))
+            elif not has_main_dish:
+                soft_warnings.append(
+                    f"[SOFT] {req.date}: {recipe.name} missing 'main-dish' tag (may still be OK)"
+                )
+
+            # LOG: Unhandled constraints
+            if req.unhandled:
+                soft_warnings.append(
+                    f"[UNHANDLED] {req.date}: Ignored constraints: {req.unhandled}"
+                )
+
+        # Log all issues
+        if hard_failures:
+            logger.warning(f"Plan validation: {len(hard_failures)} HARD failures")
+            for f in hard_failures:
+                logger.warning(f"  {f}")
+
+        if soft_warnings:
+            logger.info(f"Plan validation: {len(soft_warnings)} soft warnings")
+            for w in soft_warnings:
+                logger.info(f"  {w}")
+
+        return hard_failures, soft_warnings
 
     def _llm_semantic_match(self, requirements: str, category: str) -> bool:
         """
@@ -912,6 +1034,21 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
 
                 if self.verbose:
                     self._verbose_output(f"      → Full selection: {', '.join([r.name[:30] for r in selected])}")
+
+                # 4a. Parse requirements and validate selection (PR1 - logging only)
+                day_requirements = parse_requirements(user_message or "", dates)
+                if self.verbose:
+                    self._verbose_output(f"      → Parsed requirements: {[str(r) for r in day_requirements]}")
+
+                hard_failures, soft_warnings = self.validate_plan(selected, day_requirements)
+                if hard_failures:
+                    # PR1: Log failures but don't retry yet (observability only)
+                    logger.warning(f"[VALIDATION] {len(hard_failures)} hard failures detected (PR1 - logging only)")
+                    for f in hard_failures:
+                        self._verbose_output(f"      ⚠️  {f}")
+                if soft_warnings and self.verbose:
+                    for w in soft_warnings:
+                        self._verbose_output(f"      ℹ️  {w}")
 
                 # 4b. Store unselected recipes as backups for quick swaps
                 backups = [r for r in filtered if r not in selected][:20]  # Top 20 backups
