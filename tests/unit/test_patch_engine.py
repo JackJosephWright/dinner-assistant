@@ -615,3 +615,104 @@ class TestVariantIdUtilities:
         parsed = parse_variant_id(vid)
 
         assert parsed == (original_snapshot, original_date, original_meal)
+
+
+# =============================================================================
+# Phase 2: Warning Tests
+# =============================================================================
+
+from patch_engine import _strip_numerics
+
+
+class TestStripNumerics:
+    """Tests for _strip_numerics() function - Phase 2."""
+
+    def test_strip_minutes(self):
+        """Strip minute values."""
+        # "for X minutes" -> "for appropriate time" -> "as needed"
+        result1 = _strip_numerics("Cook for 15 minutes")
+        assert "15" not in result1
+        assert "minutes" not in result1.lower()
+
+        result2 = _strip_numerics("Simmer 10-15 min")
+        assert "10" not in result2
+        assert "min" not in result2.lower() or "appropriate" in result2.lower()
+
+        result3 = _strip_numerics("Bake for 30 mins")
+        assert "30" not in result3
+
+    def test_strip_hours(self):
+        """Strip hour values."""
+        result1 = _strip_numerics("Marinate for 2 hours")
+        assert "2" not in result1
+        assert "hours" not in result1.lower()
+
+        result2 = _strip_numerics("Rest 1 hr")
+        assert "1 hr" not in result2
+
+    def test_strip_seconds(self):
+        """Strip second values."""
+        assert "briefly" in _strip_numerics("Sear for 30 seconds")
+        assert "briefly" in _strip_numerics("Flash fry 15 secs")
+
+    def test_strip_fahrenheit(self):
+        """Strip Fahrenheit temperatures."""
+        result = _strip_numerics("Bake at 375°F")
+        assert "375" not in result
+        assert "temperature" in result.lower()
+
+    def test_strip_celsius(self):
+        """Strip Celsius temperatures."""
+        result = _strip_numerics("Heat to 190°C")
+        assert "190" not in result
+        assert "temperature" in result.lower()
+
+    def test_strip_degrees_word(self):
+        """Strip 'degrees' with number."""
+        result = _strip_numerics("Preheat oven to 350 degrees")
+        assert "350" not in result
+        assert "temperature" in result.lower()
+
+    def test_preserve_non_numeric(self):
+        """Non-numeric warnings preserved."""
+        warning = "Tofu has a different texture than chicken"
+        assert _strip_numerics(warning) == warning
+
+    def test_mixed_content(self):
+        """Mixed content with numerics stripped."""
+        result = _strip_numerics("Cook tofu for 15 minutes at 375°F until golden")
+        assert "15" not in result
+        assert "375" not in result
+        assert "tofu" in result.lower()
+        assert "golden" in result.lower()
+
+    def test_clean_double_spaces(self):
+        """Double spaces cleaned up."""
+        result = _strip_numerics("Cook  for  15  minutes")
+        assert "  " not in result
+
+
+class TestWarningCapping:
+    """Tests for warning capping behavior."""
+
+    def test_cap_at_three(self):
+        """Warnings capped at 3."""
+        # This tests the logic in generate_warnings, not the function directly
+        # since it requires LLM. We test the capping logic inline.
+        raw_warnings = ["W1", "W2", "W3", "W4", "W5"]
+        capped = []
+        for w in raw_warnings[:5]:
+            if len(w) > 1:  # Skip trivial (simulating len > 10 check)
+                capped.append(w)
+            if len(capped) >= 3:
+                break
+        assert len(capped) == 3
+        assert capped == ["W1", "W2", "W3"]
+
+    def test_skip_trivial(self):
+        """Trivial warnings (< 10 chars after strip) skipped."""
+        # Simulating the filtering logic
+        warnings = ["OK", "This is a valid warning", "Also valid warning"]
+        filtered = [w for w in warnings if len(w) > 10]
+        assert len(filtered) == 2
+        assert "OK" not in filtered

@@ -1,5 +1,94 @@
 # Development Progress
 
+## Phase 6: Recipe Variants v0 (2025-12-27) ✅ COMPLETE
+
+### Implementation Summary
+
+Full patch-based recipe modification system allowing users to modify recipes with requests like "make it dairy-free" or "add more garlic".
+
+### Phase 0: Lock Contract ✅
+
+**Created Files:**
+- `src/patch_engine.py` (480 lines)
+  - PatchOp, PatchGenResult, RecipeVariant pydantic models
+  - PatchOpType enum (REPLACE_INGREDIENT, ADD_INGREDIENT, REMOVE_INGREDIENT, SCALE_SERVINGS)
+  - `validate_ops()` - Schema + coverage + target name matching
+  - `apply_ops()` - Applies ops with correct ordering (scale → replace → remove desc → add)
+  - Quantity parsing/scaling helpers
+  - Variant ID utilities (create_variant_id, parse_variant_id)
+
+- `tests/unit/test_patch_engine.py` (46 tests)
+  - PatchOp validation tests
+  - PatchGenResult validation tests
+  - RecipeVariant validation tests
+  - validate_ops() tests
+  - apply_ops() tests
+  - Quantity parsing tests
+  - Variant ID utility tests
+
+### Phase 1: Recipe Variants ✅
+
+**Modified Files:**
+
+1. `src/data/models.py` - PlannedMeal variant support
+   - Added `variant: Optional[Dict] = None` field
+   - `has_variant()` - Check if meal has variant
+   - `get_effective_recipe()` - Returns compiled variant or base recipe
+   - `get_effective_ingredients_raw()` - Returns variant or base ingredients
+   - Updated `to_dict()` and `from_dict()` for serialization
+
+2. `src/patch_engine.py` - LLM generation
+   - `generate_patch_ops()` - Claude Haiku parses user requests into PatchOps
+   - `create_variant()` - High-level function creating full variant dict
+   - `clear_variant()` - Remove variant from snapshot
+
+3. `src/web/app.py` - Cook route and API
+   - `/api/cook/<recipe_id>` handles `variant:*` IDs
+   - Parses variant ID, loads snapshot, returns compiled_recipe
+   - `/api/clear-variant` POST endpoint for undo
+
+4. `src/agents/agentic_shopping_agent.py` - Shopping integration
+   - Uses `planned_meal.get_effective_recipe()` instead of `planned_meal.recipe`
+   - Logs when using variant recipe for ingredients
+
+5. `src/web/templates/plan.html` - UI Modified badge
+   - Shows amber "Modified" badge when `meal.has_variant` is true
+
+**Test Updates:**
+- `tests/unit/test_planned_meal.py` - 3 new tests (10 total)
+  - test_variant_without_variant
+  - test_variant_with_variant
+  - test_variant_serialization
+
+### Commits
+
+| Hash | Description |
+|------|-------------|
+| `2bcbba5` | Phase 0: PatchOp pydantic models + validators |
+| `ebc22c0` | feat(variants): add variant support to PlannedMeal |
+| `b04b5af` | feat(patch-engine): add LLM-based patch generation |
+| `1c9320c` | feat(cook-route): add variant ID support |
+| `33c591e` | feat(shopping): use effective recipe |
+| `a216ff8` | feat(variants): add clear_variant() |
+| `28f2bc5` | feat(ui): add Modified badge |
+
+### Test Results
+
+```
+56 tests passing:
+- 46 patch_engine tests
+- 10 planned_meal tests (including 3 new variant tests)
+```
+
+### Architecture Decisions
+
+1. **Variant ID Format:** `variant:{snapshot_id}:{date}:{meal_type}`
+2. **Compiled Recipe Caching:** Stored in snapshot JSON, never recomputed
+3. **Transparent Access:** `get_effective_recipe()` abstracts variant handling
+4. **v0 Scope:** Ingredient ops only (no step ops, no add_side, no user library)
+
+---
+
 ## Phase 1: Core Functionality
 
 ### Day 1-2: Foundation + Vertical Slice ✓ COMPLETE

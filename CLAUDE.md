@@ -10,7 +10,7 @@ AI-powered multi-agent meal planning system using MCP (Model Context Protocol) a
 - **Database**: SQLite (recipes.db, user_data.db)
 - **LLM**: Anthropic Claude (via API)
 - **Web Framework**: Flask with SSE (Server-Sent Events)
-- **Testing**: pytest (103 passing tests, Playwright for web UI)
+- **Testing**: pytest (159+ passing tests, Playwright for web UI)
 
 ## Architecture
 
@@ -237,28 +237,40 @@ python3 src/web/app.py  # http://localhost:5000
 - `[POOL]` log lines show per-query timing and method (recipe_tags vs like)
 - `[PLAN-TIMING]` log lines show total plan generation breakdown
 
-### ✅ Phase 6: Recipe Variants - Investigation Complete (2025-12-27)
+### ✅ Phase 6: Recipe Variants v0 - Complete (2025-12-27)
 **Problem:** Users want to modify recipes inline ("swap chicken for tofu", "double the garlic") with changes persisting across reloads and propagating to Shop/Cook views.
 
-**Investigation Complete:**
-- ✅ **Meal Components Investigation** - Multi-recipe meals (Main + Side)
-  - Proposed `MealComponent` dataclass with `role` and `recipe` fields
-  - Backward-compat via `PlannedMeal.recipe` property
-  - ~12 files affected, medium blast radius
-  - Deferred to Phase 3 of implementation
+**Implementation Complete:**
 
-- ✅ **LLM Recipe Modification Investigation** - Patch-based recipe variants
-  - Architecture: User → LLM → PatchOps → Validator → Applicator → Snapshot
-  - Found existing precedent: `MealEvent.modifications` and `MealEvent.substitutions` fields
-  - Cook route uses string ID (`<recipe_id>` not `<int:recipe_id>`), enabling variant IDs
+**Phase 0: Lock Contract ✅**
+- `src/patch_engine.py` - PatchOp, PatchGenResult, RecipeVariant pydantic models
+- `tests/unit/test_patch_engine.py` - 46 tests passing
+- Supported ops: `replace_ingredient`, `add_ingredient`, `remove_ingredient`, `scale_servings`
+- Validators: schema validation, coverage check, target name matching
+- Apply ordering: scale → replace → remove(desc) → add(end-only)
 
-**v0 Scope Locked:**
-| In Scope | Out of Scope |
-|----------|--------------|
-| `replace_ingredient` | Step ops (edit/add/remove step) |
-| `add_ingredient` | `add_side` (meal-level, Phase 3) |
-| `remove_ingredient` (with `acknowledged: true`) | User recipe library |
-| `scale_servings` | Manual patch editor UI |
+**Phase 1: Recipe Variants ✅**
+- PlannedMeal variant support (`src/data/models.py`)
+  - `variant: Optional[Dict]` field
+  - `has_variant()`, `get_effective_recipe()`, `get_effective_ingredients_raw()` methods
+- LLM-based patch generation (`src/patch_engine.py`)
+  - `generate_patch_ops()` - Claude Haiku parses user requests
+  - `create_variant()` - High-level variant creation
+  - `clear_variant()` - Undo support
+- Cook route variant support (`src/web/app.py`)
+  - `/api/cook/variant:*` handles variant IDs
+  - `/api/clear-variant` POST endpoint
+- Shopping integration (`src/agents/agentic_shopping_agent.py`)
+  - Uses `get_effective_recipe()` for modified ingredients
+- UI Modified badge (`src/web/templates/plan.html`)
+  - Amber "Modified" badge when `meal.has_variant` is true
+
+**Commits:** `2bcbba5` → `28f2bc5` (7 commits)
+
+**Test Results:**
+- 46 patch_engine tests passing
+- 10 planned_meal tests passing (including 3 new variant tests)
+- **Total: 56 tests**
 
 **Key Design Decisions:**
 - Variants are **plan-scoped** (stored in snapshot, not global)
@@ -267,14 +279,9 @@ python3 src/web/app.py  # http://localhost:5000
 - Coverage rule: nothing disappears unless explicit remove op
 - Ambiguity rule: if target match unclear, BLOCK and ask
 
-**Implementation Estimate:** 5-6 days across 3 phases
-- Phase 0: Lock Contract (½ day) - PatchOp dataclasses, validators
-- Phase 1: Recipe Variants (2-3 days) - LLM generation, application, persistence
-- Phase 2: Bounded Warnings (½-1 day) - LLM warnings with stripped numerics
-
 **Key Files:**
-- `docs/MEAL_COMPONENTS_INVESTIGATION.md` - Multi-recipe meal analysis
-- `docs/LLM_RECIPE_MODIFICATION_INVESTIGATION.md` - Patch-based modification design
+- `src/patch_engine.py` - Core patch engine (480 lines)
+- `tests/unit/test_patch_engine.py` - 46 tests
 - `docs/RECIPE_VARIANTS_V0_PLAN.md` - Locked v0 scope and phased plan
 
 ### 🤔 Under Consideration - Side Dishes

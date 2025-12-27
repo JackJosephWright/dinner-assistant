@@ -1,6 +1,28 @@
 # Project Status Summary
 
-## 🎯 What's Built (Day 1-2 Complete)
+## 🎯 Current Status (2025-12-27)
+
+### ✅ Recipe Variants v0 - Complete
+Full implementation of patch-based recipe modification system:
+
+**Phase 0: Lock Contract**
+- `src/patch_engine.py` - PatchOp pydantic models, validators, apply_ops
+- `tests/unit/test_patch_engine.py` - 46 tests passing
+- Supported ops: replace_ingredient, add_ingredient, remove_ingredient, scale_servings
+
+**Phase 1: Recipe Variants**
+- PlannedMeal extended with variant field (`src/data/models.py`)
+- LLM-based patch generation using Claude Haiku
+- Cook route handles variant IDs (`/api/cook/variant:*`)
+- Shopping uses `get_effective_recipe()` for modified ingredients
+- `clear_variant()` function for undo
+- UI shows amber "Modified" badge in plan.html
+
+**Commits:** `2bcbba5` → `28f2bc5` (7 commits)
+
+---
+
+## 🎯 What's Built (Foundation)
 
 ### ✅ Fully Functional
 Your meal planning system foundation is **working and tested**:

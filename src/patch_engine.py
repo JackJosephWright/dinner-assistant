@@ -665,20 +665,218 @@ def create_variant(
         'servings': new_servings,
     }
 
-    # 5. Build variant dict
+    # 5. Generate warnings
+    warnings = generate_warnings(
+        patch_ops=gen_result.ops,
+        recipe_name=recipe_name,
+        original_ingredients=ingredients,
+        modified_ingredients=new_ingredients,
+        client=client,
+    )
+
+    # 6. Build variant dict
     variant = {
         'variant_id': variant_id,
         'base_recipe_id': recipe.get('id', 'unknown'),
         'patch_ops': [op.model_dump() for op in gen_result.ops],
         'compiled_recipe': compiled_recipe,
-        'warnings': [],  # Phase 2 will add warnings
+        'warnings': warnings,
         'compiled_at': datetime.utcnow().isoformat() + 'Z',
         'compiler_version': 'v0',
     }
 
-    logger.info(f"[VARIANT_CREATE] Created variant {variant_id} with {len(gen_result.ops)} ops")
+    logger.info(f"[VARIANT_CREATE] Created variant {variant_id} with {len(gen_result.ops)} ops, {len(warnings)} warnings")
 
-    return variant, []
+    return variant, warnings
+
+
+# =============================================================================
+# Phase 2: Warning Generation
+# =============================================================================
+
+WARN_GEN_SYSTEM_PROMPT = """You are a helpful cooking assistant. Given a recipe modification, generate brief warnings about potential issues.
+
+Focus on:
+1. Cooking technique changes (e.g., tofu cooks differently than chicken)
+2. Flavor profile changes (e.g., substitution may alter taste)
+3. Texture changes (e.g., different ingredient may have different texture)
+4. Allergen introductions (e.g., adding nuts)
+
+DO NOT include:
+- Specific cooking times (minutes) - these vary too much
+- Specific temperatures - these depend on equipment
+- Generic advice that applies to all cooking
+
+OUTPUT FORMAT (JSON only):
+{
+  "warnings": [
+    "Brief warning about the modification",
+    "Another warning if applicable"
+  ]
+}
+
+Keep warnings:
+- Under 100 characters each
+- Focused on the specific modification
+- Helpful, not alarming
+- Maximum 5 warnings (will be capped to 3)"""
+
+
+def generate_warnings(
+    patch_ops: list[PatchOp],
+    recipe_name: str,
+    original_ingredients: list[str],
+    modified_ingredients: list[str],
+    client=None,
+) -> list[str]:
+    """
+    Generate warnings about recipe modifications using LLM.
+
+    Args:
+        patch_ops: List of applied patch operations
+        recipe_name: Name of the recipe being modified
+        original_ingredients: Original ingredients list
+        modified_ingredients: Modified ingredients list
+        client: Anthropic client (if None, creates new one)
+
+    Returns:
+        List of warning strings (max 3, numeric values stripped)
+
+    Logs:
+        [WARN_GEN] for LLM generation
+        [WARN_STRIP] for numeric stripping
+    """
+    import json
+    import time
+
+    start = time.time()
+
+    if not patch_ops:
+        return []
+
+    # Create client if not provided
+    if client is None:
+        try:
+            from anthropic import Anthropic
+            import os
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                logger.warning("[WARN_GEN] No API key, skipping warning generation")
+                return []
+            client = Anthropic(api_key=api_key)
+        except Exception as e:
+            logger.error(f"[WARN_GEN] Failed to create Anthropic client: {e}")
+            return []
+
+    # Summarize the modifications
+    modifications = []
+    for op in patch_ops:
+        if op.op == PatchOpType.REPLACE_INGREDIENT:
+            modifications.append(
+                f"Replaced '{op.target_name}' with '{op.replacement.name}'"
+            )
+        elif op.op == PatchOpType.ADD_INGREDIENT:
+            modifications.append(f"Added '{op.new_ingredient}'")
+        elif op.op == PatchOpType.REMOVE_INGREDIENT:
+            modifications.append(f"Removed '{op.target_name}'")
+        elif op.op == PatchOpType.SCALE_SERVINGS:
+            modifications.append(f"Scaled recipe by {op.scale_factor}x")
+
+    prompt = f"""Recipe: {recipe_name}
+
+Modifications made:
+{chr(10).join(f'- {m}' for m in modifications)}
+
+Original ingredients:
+{chr(10).join(f'- {ing}' for ing in original_ingredients[:10])}
+
+Generate warnings about these modifications. Output JSON only."""
+
+    logger.info(f"[WARN_GEN] Generating warnings for {len(patch_ops)} modifications")
+
+    try:
+        response = client.messages.create(
+            model=PATCH_GEN_MODEL,
+            max_tokens=300,
+            system=WARN_GEN_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        content = response.content[0].text.strip()
+        llm_time = time.time() - start
+
+        logger.info(f"[WARN_GEN] LLM response in {llm_time:.3f}s")
+
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1])
+
+        data = json.loads(content)
+        raw_warnings = data.get("warnings", [])
+
+        # Strip numerics and cap at 3
+        warnings = []
+        for w in raw_warnings[:5]:  # Process at most 5
+            stripped = _strip_numerics(w)
+            if stripped and len(stripped) > 10:  # Skip trivial warnings
+                warnings.append(stripped)
+            if len(warnings) >= 3:  # Cap at 3
+                break
+
+        logger.info(f"[WARN_GEN] Generated {len(warnings)} warnings (capped from {len(raw_warnings)})")
+
+        return warnings
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[WARN_GEN] Failed to parse LLM response as JSON: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"[WARN_GEN] Error generating warnings: {e}")
+        return []
+
+
+def _strip_numerics(warning: str) -> str:
+    """
+    Strip specific numeric values (times, temperatures) from warnings.
+
+    Examples:
+        "Cook for 15 minutes" -> "Cook for a shorter time"
+        "Bake at 375°F" -> "Bake at appropriate temperature"
+        "Simmer 10-15 min" -> "Simmer briefly"
+
+    Logs:
+        [WARN_STRIP] when numerics are stripped
+    """
+    original = warning
+
+    # Patterns to strip/replace
+    patterns = [
+        # Time patterns: "15 minutes", "10-15 min", "30 mins"
+        (r'\b\d+(?:-\d+)?\s*(?:minutes?|mins?)\b', 'appropriate time'),
+        (r'\b\d+(?:-\d+)?\s*(?:hours?|hrs?)\b', 'appropriate time'),
+        (r'\b\d+(?:-\d+)?\s*(?:seconds?|secs?)\b', 'briefly'),
+
+        # Temperature patterns: "375°F", "190°C", "350 degrees"
+        (r'\b\d+(?:-\d+)?°?[FC]\b', 'appropriate temperature'),
+        (r'\b\d+(?:-\d+)?\s*degrees?\s*(?:fahrenheit|celsius)?\b', 'appropriate temperature'),
+
+        # Generic "X minutes/hours" phrases
+        (r'\bfor\s+appropriate time\b', 'as needed'),
+        (r'\bat\s+appropriate temperature\b', 'at the right temperature'),
+    ]
+
+    result = warning
+    for pattern, replacement in patterns:
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+
+    # Clean up double spaces
+    result = re.sub(r'\s+', ' ', result).strip()
+
+    if result != original:
+        logger.info(f"[WARN_STRIP] '{original}' -> '{result}'")
+
+    return result
 
 
 def clear_variant(
