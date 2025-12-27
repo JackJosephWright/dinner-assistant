@@ -549,6 +549,18 @@ def plan_page():
                         meal_dict['cuisine'] = recipe.get('cuisine')
                         meal_dict['difficulty'] = recipe.get('difficulty')
 
+                    # Check for variant (modified recipe)
+                    if 'variant' in meal_dict and meal_dict['variant']:
+                        meal_dict['has_variant'] = True
+                        variant = meal_dict['variant']
+                        # Use compiled recipe name for display
+                        if 'compiled_recipe' in variant:
+                            meal_dict['recipe_name'] = variant['compiled_recipe'].get('name', meal_dict.get('recipe_name'))
+                            # Use variant ID for cook link
+                            meal_dict['recipe_id'] = variant.get('variant_id', meal_dict.get('recipe_id'))
+                    else:
+                        meal_dict['has_variant'] = False
+
                     # Format date nicely (e.g., "Friday, November 1")
                     date_str = meal_dict.get('date')
                     if date_str:
