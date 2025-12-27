@@ -1331,12 +1331,64 @@ def api_create_shopping_list():
 @app.route('/api/cook/<recipe_id>', methods=['GET'])
 @login_required
 def api_get_cooking_guide(recipe_id):
-    """Get cooking guide for a recipe."""
+    """Get cooking guide for a recipe.
+
+    Supports variant IDs (variant:{snapshot_id}:{date}:{meal_type}).
+    For variants, returns the compiled_recipe from the snapshot.
+    """
     try:
-        logger.info(f"Getting cooking guide for {recipe_id}")
+        logger.info(f"[VARIANT_LOOKUP] Getting cooking guide for {recipe_id}")
 
+        # Check if this is a variant ID
+        if recipe_id.startswith('variant:'):
+            from patch_engine import parse_variant_id
+
+            try:
+                snapshot_id, date, meal_type = parse_variant_id(recipe_id)
+                logger.info(f"[VARIANT_LOOKUP] Parsed variant: snapshot={snapshot_id}, date={date}, meal={meal_type}")
+
+                # Load snapshot
+                snapshot = assistant.db.get_snapshot(snapshot_id)
+                if not snapshot:
+                    logger.warning(f"[VARIANT_LOOKUP] Snapshot not found: {snapshot_id}")
+                    return jsonify({"success": False, "error": f"Snapshot not found: {snapshot_id}"}), 404
+
+                # Find planned meal matching date and meal_type
+                planned_meals = snapshot.get('planned_meals', [])
+                matching_meal = None
+                for meal in planned_meals:
+                    if meal.get('date') == date and meal.get('meal_type') == meal_type:
+                        matching_meal = meal
+                        break
+
+                if not matching_meal:
+                    logger.warning(f"[VARIANT_LOOKUP] No meal found for {date}/{meal_type}")
+                    return jsonify({"success": False, "error": f"No meal found for {date}/{meal_type}"}), 404
+
+                # Check for variant
+                variant = matching_meal.get('variant')
+                if not variant or 'compiled_recipe' not in variant:
+                    logger.warning(f"[VARIANT_LOOKUP] No variant found for {date}/{meal_type}")
+                    return jsonify({"success": False, "error": f"No variant found for {date}/{meal_type}"}), 404
+
+                # Return the compiled recipe
+                compiled_recipe = variant['compiled_recipe']
+                logger.info(f"[VARIANT_LOOKUP] Found variant: {compiled_recipe.get('name')}")
+
+                return jsonify({
+                    "success": True,
+                    "recipe": compiled_recipe,
+                    "is_variant": True,
+                    "variant_id": recipe_id,
+                    "warnings": variant.get('warnings', []),
+                })
+
+            except ValueError as e:
+                logger.error(f"[VARIANT_LOOKUP] Invalid variant ID: {e}")
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        # Regular recipe ID - use standard cooking guide
         result = assistant.get_cooking_guide(recipe_id)
-
         return jsonify(result)
 
     except Exception as e:
