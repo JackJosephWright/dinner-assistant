@@ -179,12 +179,19 @@ class AgenticShoppingAgent:
                 return state
 
             raw_ingredients = []
+            variant_count = 0
 
             for planned_meal in meal_plan.meals:
-                # Use embedded recipe from PlannedMeal (Phase 2 enhancement)
-                recipe = planned_meal.recipe
+                # Use effective recipe (compiled variant if exists, else base recipe)
+                # This ensures variant modifications appear in shopping list
+                recipe = planned_meal.get_effective_recipe()
                 if not recipe:
                     continue
+
+                # Track variants for logging
+                if planned_meal.has_variant():
+                    variant_count += 1
+                    logger.info(f"[SHOP] Using variant recipe for {planned_meal.date}: {recipe.name}")
 
                 # Use structured ingredients if available (enriched recipes)
                 if recipe.ingredients_structured:
@@ -206,7 +213,7 @@ class AgenticShoppingAgent:
 
             state["raw_ingredients"] = raw_ingredients
             enriched_count = sum(1 for m in meal_plan.meals if m.recipe and m.recipe.ingredients_structured)
-            logger.info(f"Collected {len(raw_ingredients)} ingredients from {len(meal_plan.meals)} recipes ({enriched_count} enriched)")
+            logger.info(f"Collected {len(raw_ingredients)} ingredients from {len(meal_plan.meals)} recipes ({enriched_count} enriched, {variant_count} variants)")
 
             return state
 
