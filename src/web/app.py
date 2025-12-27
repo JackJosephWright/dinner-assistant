@@ -1396,6 +1396,65 @@ def api_get_cooking_guide(recipe_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/clear-variant', methods=['POST'])
+@login_required
+def api_clear_variant():
+    """Clear a variant from a planned meal, reverting to base recipe.
+
+    Request body:
+        snapshot_id: Snapshot ID
+        date: Date string (YYYY-MM-DD)
+        meal_type: Meal type (breakfast/lunch/dinner/snack)
+    """
+    try:
+        data = request.json
+        snapshot_id = data.get('snapshot_id')
+        date = data.get('date')
+        meal_type = data.get('meal_type')
+
+        if not all([snapshot_id, date, meal_type]):
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields: snapshot_id, date, meal_type"
+            }), 400
+
+        # Load snapshot
+        snapshot = assistant.db.get_snapshot(snapshot_id)
+        if not snapshot:
+            return jsonify({"success": False, "error": f"Snapshot not found: {snapshot_id}"}), 404
+
+        # Clear the variant
+        from patch_engine import clear_variant
+        cleared = clear_variant(snapshot, date, meal_type)
+
+        if cleared:
+            # Save updated snapshot
+            snapshot['updated_at'] = datetime.now().isoformat()
+            assistant.db.save_snapshot(snapshot)
+
+            # Broadcast update to other tabs
+            broadcast_state_change('meal_plan_changed', {
+                'snapshot_id': snapshot_id,
+                'date': date,
+                'meal_type': meal_type,
+                'action': 'variant_cleared',
+            })
+
+            return jsonify({
+                "success": True,
+                "message": f"Variant cleared for {date} {meal_type}",
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "message": f"No variant to clear for {date} {meal_type}",
+            })
+
+    except Exception as e:
+        logger.error(f"Error clearing variant: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/search-recipes', methods=['POST'])
 @login_required
 def api_search_recipes():

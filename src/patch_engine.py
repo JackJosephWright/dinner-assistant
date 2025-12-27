@@ -679,3 +679,39 @@ def create_variant(
     logger.info(f"[VARIANT_CREATE] Created variant {variant_id} with {len(gen_result.ops)} ops")
 
     return variant, []
+
+
+def clear_variant(
+    snapshot: dict,
+    date: str,
+    meal_type: str,
+) -> bool:
+    """
+    Clear a variant from a planned meal in a snapshot.
+
+    Args:
+        snapshot: Snapshot dict (will be modified in place)
+        date: Date string (YYYY-MM-DD)
+        meal_type: Meal type (breakfast/lunch/dinner/snack)
+
+    Returns:
+        True if variant was cleared, False if no variant existed
+
+    Note:
+        This modifies the snapshot in place. Caller must save it back to DB.
+    """
+    planned_meals = snapshot.get('planned_meals', [])
+
+    for meal in planned_meals:
+        if meal.get('date') == date and meal.get('meal_type') == meal_type:
+            if 'variant' in meal:
+                variant_id = meal['variant'].get('variant_id', 'unknown')
+                del meal['variant']
+                logger.info(f"[VARIANT_CLEAR] Cleared variant {variant_id} for {date}/{meal_type}")
+                return True
+            else:
+                logger.info(f"[VARIANT_CLEAR] No variant to clear for {date}/{meal_type}")
+                return False
+
+    logger.warning(f"[VARIANT_CLEAR] No meal found for {date}/{meal_type}")
+    return False
