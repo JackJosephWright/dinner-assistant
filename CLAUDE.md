@@ -74,7 +74,7 @@ SQLite DBs (recipes.db, user_data.db)
 - **preferences**: User preferences and dietary restrictions
 - **grocery_lists**: Shopping lists with store sections
 
-## Current Status (Last Updated: 2025-10-29)
+## Current Status (Last Updated: 2025-12-27)
 
 ### ✅ Phase 1: Foundation - Complete
 - Recipe database loaded (492,630 recipes)
@@ -237,33 +237,92 @@ python3 src/web/app.py  # http://localhost:5000
 - `[POOL]` log lines show per-query timing and method (recipe_tags vs like)
 - `[PLAN-TIMING]` log lines show total plan generation breakdown
 
+### ✅ Phase 6: Recipe Variants - Investigation Complete (2025-12-27)
+**Problem:** Users want to modify recipes inline ("swap chicken for tofu", "double the garlic") with changes persisting across reloads and propagating to Shop/Cook views.
+
+**Investigation Complete:**
+- ✅ **Meal Components Investigation** - Multi-recipe meals (Main + Side)
+  - Proposed `MealComponent` dataclass with `role` and `recipe` fields
+  - Backward-compat via `PlannedMeal.recipe` property
+  - ~12 files affected, medium blast radius
+  - Deferred to Phase 3 of implementation
+
+- ✅ **LLM Recipe Modification Investigation** - Patch-based recipe variants
+  - Architecture: User → LLM → PatchOps → Validator → Applicator → Snapshot
+  - Found existing precedent: `MealEvent.modifications` and `MealEvent.substitutions` fields
+  - Cook route uses string ID (`<recipe_id>` not `<int:recipe_id>`), enabling variant IDs
+
+**v0 Scope Locked:**
+| In Scope | Out of Scope |
+|----------|--------------|
+| `replace_ingredient` | Step ops (edit/add/remove step) |
+| `add_ingredient` | `add_side` (meal-level, Phase 3) |
+| `remove_ingredient` (with `acknowledged: true`) | User recipe library |
+| `scale_servings` | Manual patch editor UI |
+
+**Key Design Decisions:**
+- Variants are **plan-scoped** (stored in snapshot, not global)
+- Variant IDs: `variant:{snapshot_id}:{date}:{slot}`
+- Compiled recipe stored in snapshot - never recomputed on reload
+- Coverage rule: nothing disappears unless explicit remove op
+- Ambiguity rule: if target match unclear, BLOCK and ask
+
+**Implementation Estimate:** 5-6 days across 3 phases
+- Phase 0: Lock Contract (½ day) - PatchOp dataclasses, validators
+- Phase 1: Recipe Variants (2-3 days) - LLM generation, application, persistence
+- Phase 2: Bounded Warnings (½-1 day) - LLM warnings with stripped numerics
+
+**Key Files:**
+- `docs/MEAL_COMPONENTS_INVESTIGATION.md` - Multi-recipe meal analysis
+- `docs/LLM_RECIPE_MODIFICATION_INVESTIGATION.md` - Patch-based modification design
+- `docs/RECIPE_VARIANTS_V0_PLAN.md` - Locked v0 scope and phased plan
+
 ### 🤔 Under Consideration - Side Dishes
 **User Request:** "can you add a salad side dish to the honey garlic chicken"
 
 **Current Limitation:** PlannedMeal only supports single recipe (no side dish support)
 
-**Design Options Discussed (2025-10-29):**
-- Option A: `side_recipes: List[Recipe]` - Separate list of side recipes (original design in docs)
-- Option B: Modify recipe directly - Create combined recipe on-the-fly
-- Option C: `side: Optional[Recipe]` - Single side dish field (user's suggestion)
-- Option D: Recursive nesting - `side: Optional[PlannedMeal]` (discussed but semantically problematic)
-- Option E: `sides: List[Recipe]` - Multiple sides as recipe list (cleanest approach)
+**Investigation Update (2025-12-27):**
+Formal investigation completed in `docs/MEAL_COMPONENTS_INVESTIGATION.md`. Key findings:
 
-**Decision Status:** ⏸️ **DEFERRED** - No decision made yet, exploring options
+**Recommended Approach: MealComponent Pattern**
+```python
+@dataclass
+class MealComponent:
+    role: str  # "main" | "side" | "drink" | "dessert"
+    recipe: Recipe
 
-**Context for Next Session:**
-- Design already exists in `docs/design/step4_planned_meal_design.md` (lines 321-346)
-- Original decision was "Start with single recipe, add multi-recipe support later if needed"
-- User is thinking about whether to use `side` (singular) or `sides` (list)
-- Needs discussion on: single vs multiple sides, recursive vs list approach
-- See conversation history for full analysis of pros/cons
+@dataclass
+class PlannedMeal:
+    components: List[MealComponent]
+
+    @property
+    def recipe(self) -> Recipe:  # Backward-compat
+        return next(c.recipe for c in self.components if c.role == "main")
+```
+
+**Blast Radius:** ~12 files, medium complexity
+- Shop aggregation needs multi-recipe support
+- Cook view needs component sections
+- Snapshot JSON needs `components[]` array
+
+**Decision Status:** ⏸️ **DEFERRED to Recipe Variants Phase 3**
+- Phase 1-2 focuses on ingredient-level modifications
+- Phase 3 adds `add_side` as meal-level operation using MealComponent pattern
+
+**Context:**
+- See `docs/MEAL_COMPONENTS_INVESTIGATION.md` for full analysis
+- See `docs/RECIPE_VARIANTS_V0_PLAN.md` Phase 3 for implementation plan
 
 ### 📋 Next Steps
-- Add SSE integration to Cook tab (Plan and Shop complete)
+- **Recipe Variants v0 Implementation** - Start with Phase 0 (Lock Contract)
+  - Create `src/patch_engine.py` with PatchOp dataclasses
+  - Implement validators (schema, coverage, ambiguity)
+  - Unit tests for validation
 - Fix 20 failing tests (performance benchmarks, chatbot cache, e2e workflows)
 - Resolve 7 test errors (incremental grocery list, contributions)
-- Consider: Side dish support in PlannedMeal
 - Future: Full enrichment of 492K recipes
+- Future: Recipe Variants Phase 3 (MealBundles with side dishes)
 
 ## Development Commands
 
@@ -349,6 +408,9 @@ class PlanningState:
 
 ### Documentation
 - `docs/MEAL_PLAN_WORKFLOW_REPORT.md` - **Complete workflow report (50+ pages)**
+- `docs/MEAL_COMPONENTS_INVESTIGATION.md` - Multi-recipe meal analysis (Phase 6)
+- `docs/LLM_RECIPE_MODIFICATION_INVESTIGATION.md` - Patch-based recipe variants (Phase 6)
+- `docs/RECIPE_VARIANTS_V0_PLAN.md` - Locked v0 scope and implementation plan
 - `docs/development/CHECKPOINT_RECIPE_ENRICHMENT.md` - Phase 2 enrichment summary
 - `docs/development/DEV_DATABASE.md` - Development database guide
 - `docs/development/IMPLEMENTATION_STATUS.md` - What's built vs designed
