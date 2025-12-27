@@ -1088,6 +1088,39 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                     "required": ["date"],
                 },
             },
+            # Recipe Variants v0 tools
+            {
+                "name": "modify_recipe",
+                "description": "Modify a recipe in the current meal plan (e.g., 'use halibut instead of cod', 'make it dairy-free', 'double the garlic'). Creates a variant that persists and updates shopping list. Use for ingredient swaps, additions, removals, or scaling.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Date of the meal to modify (YYYY-MM-DD)",
+                        },
+                        "modification": {
+                            "type": "string",
+                            "description": "What to change (e.g., 'replace cod with halibut', 'remove the dairy', 'add extra garlic')",
+                        },
+                    },
+                    "required": ["date", "modification"],
+                },
+            },
+            {
+                "name": "clear_recipe_modifications",
+                "description": "Remove all modifications from a recipe, reverting it to the original version.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date": {
+                            "type": "string",
+                            "description": "Date of the meal to revert (YYYY-MM-DD)",
+                        },
+                    },
+                    "required": ["date"],
+                },
+            },
         ]
 
     def execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str:
@@ -1744,6 +1777,118 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 output += f"\nTotal: {len(all_ingredients)} ingredients"
                 return output
 
+            # Recipe Variants v0 tools
+            elif tool_name == "modify_recipe":
+                if not self.last_meal_plan:
+                    return "No meal plan loaded. Please create or load a plan first."
+
+                date = tool_input["date"]
+                modification = tool_input["modification"]
+
+                # Find the meal for this date
+                meals = self.last_meal_plan.get_meals_for_day(date)
+                if not meals:
+                    return f"No meal found for {date}. Check your plan dates."
+
+                meal = meals[0]  # Get the first meal (dinner)
+                recipe = meal.recipe
+
+                if self.verbose:
+                    self._verbose_output(f"      → Modifying recipe '{recipe.name}' for {date}")
+
+                try:
+                    from patch_engine import create_variant
+
+                    # Get snapshot ID from session/context
+                    snapshot_id = getattr(self, 'current_snapshot_id', None)
+                    if not snapshot_id:
+                        # Try to get from last_meal_plan
+                        snapshot_id = getattr(self.last_meal_plan, 'snapshot_id', None)
+                    if not snapshot_id:
+                        snapshot_id = f"snap_{date.replace('-', '')}"  # Fallback
+
+                    # Create the variant
+                    variant, warnings = create_variant(
+                        user_request=modification,
+                        recipe=recipe.to_dict(),
+                        snapshot_id=snapshot_id,
+                        date=date,
+                        meal_type="dinner",
+                        client=self.client,
+                    )
+
+                    # Store the variant in the meal
+                    meal.variant = variant
+
+                    # Update the snapshot in DB if possible
+                    if hasattr(self.assistant, 'db') and snapshot_id:
+                        try:
+                            snapshot = self.assistant.db.get_snapshot(snapshot_id)
+                            if snapshot:
+                                for pm in snapshot.get('planned_meals', []):
+                                    if pm.get('date') == date and pm.get('meal_type') == 'dinner':
+                                        pm['variant'] = variant
+                                        break
+                                self.assistant.db.save_snapshot(snapshot)
+                                logger.info(f"[VARIANT_CREATE] Saved variant to snapshot {snapshot_id}")
+                        except Exception as e:
+                            logger.warning(f"[VARIANT_CREATE] Could not save to snapshot: {e}")
+
+                    # Build response
+                    compiled = variant['compiled_recipe']
+                    output = f"✓ Modified '{recipe.name}' for {date}!\n\n"
+                    output += f"**{compiled['name']}**\n\n"
+
+                    if warnings:
+                        output += "**Cooking notes:**\n"
+                        for w in warnings:
+                            output += f"- {w}\n"
+                        output += "\n"
+
+                    output += "The shopping list will be updated with the new ingredients."
+                    return output
+
+                except ValueError as e:
+                    return f"Couldn't modify the recipe: {str(e)}"
+                except Exception as e:
+                    logger.error(f"[VARIANT_CREATE] Error: {e}", exc_info=True)
+                    return f"Error modifying recipe: {str(e)}"
+
+            elif tool_name == "clear_recipe_modifications":
+                if not self.last_meal_plan:
+                    return "No meal plan loaded. Please create or load a plan first."
+
+                date = tool_input["date"]
+
+                # Find the meal for this date
+                meals = self.last_meal_plan.get_meals_for_day(date)
+                if not meals:
+                    return f"No meal found for {date}. Check your plan dates."
+
+                meal = meals[0]
+
+                if not meal.has_variant():
+                    return f"The meal on {date} hasn't been modified."
+
+                # Get snapshot and clear variant
+                snapshot_id = getattr(self, 'current_snapshot_id', None) or getattr(self.last_meal_plan, 'snapshot_id', None)
+
+                if snapshot_id and hasattr(self.assistant, 'db'):
+                    try:
+                        from patch_engine import clear_variant
+                        snapshot = self.assistant.db.get_snapshot(snapshot_id)
+                        if snapshot:
+                            clear_variant(snapshot, date, "dinner")
+                            self.assistant.db.save_snapshot(snapshot)
+                    except Exception as e:
+                        logger.warning(f"[VARIANT_CLEAR] Could not update snapshot: {e}")
+
+                # Clear from in-memory meal
+                original_name = meal.recipe.name
+                meal.variant = None
+
+                return f"✓ Reverted to original recipe: {original_name}"
+
             else:
                 return f"Unknown tool: {tool_name}"
 
@@ -1792,6 +1937,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                         "get_cooking_guide": "Loading recipe details...",
                         "check_allergens": "Checking allergens...",
                         "show_current_plan": "Loading your meal plan...",
+                        "modify_recipe": "Modifying recipe...",
+                        "clear_recipe_modifications": "Reverting to original recipe...",
                     }
                     friendly_msg = tool_friendly_names.get(content_block.name, f"Running {content_block.name}...")
                     self._verbose_output(friendly_msg)
