@@ -275,6 +275,152 @@ def test_display_methods():
     print("\n✅ PASSED\n")
 
 
+def test_variant_without_variant():
+    """Test PlannedMeal without variant."""
+    print("=" * 60)
+    print("TEST 8: Meal Without Variant")
+    print("=" * 60)
+
+    db = DatabaseInterface('data')
+    recipe = db.get_recipe('71247')
+
+    meal = PlannedMeal(
+        date="2025-10-29",
+        meal_type="dinner",
+        recipe=recipe,
+        servings=4
+    )
+
+    print(f"Meal: {meal.recipe.name}")
+    print(f"has_variant(): {meal.has_variant()}")
+
+    assert not meal.has_variant(), "Should not have variant"
+    assert meal.get_effective_recipe() is recipe, "Effective recipe should be base recipe"
+    assert meal.get_effective_ingredients_raw() == recipe.ingredients_raw, "Should use base ingredients"
+
+    # Serialization should not include variant
+    data = meal.to_dict()
+    assert "variant" not in data, "Variant should not be in serialized data"
+
+    print("\n✅ PASSED\n")
+
+
+def test_variant_with_variant():
+    """Test PlannedMeal with variant."""
+    print("=" * 60)
+    print("TEST 9: Meal With Variant")
+    print("=" * 60)
+
+    db = DatabaseInterface('data')
+    recipe = db.get_recipe('71247')
+
+    # Create a variant with modified ingredients
+    variant = {
+        "variant_id": "variant:snap_test123:2025-10-29:dinner",
+        "base_recipe_id": recipe.id,
+        "patch_ops": [
+            {
+                "op": "replace_ingredient",
+                "target_index": 0,
+                "target_name": "original",
+                "replacement": {"name": "modified", "quantity": "2 cups"}
+            }
+        ],
+        "compiled_recipe": {
+            "id": "variant:snap_test123:2025-10-29:dinner",
+            "name": f"{recipe.name} (modified)",
+            "description": recipe.description,
+            "ingredients": [],
+            "ingredients_raw": ["2 cups modified ingredient", "remaining base ingredients"],
+            "steps": recipe.steps,
+            "servings": recipe.servings,
+            "serving_size": recipe.serving_size,
+            "tags": recipe.tags,
+        },
+        "warnings": [],
+        "compiled_at": "2025-10-29T10:00:00Z",
+        "compiler_version": "v0"
+    }
+
+    meal = PlannedMeal(
+        date="2025-10-29",
+        meal_type="dinner",
+        recipe=recipe,
+        servings=4,
+        variant=variant
+    )
+
+    print(f"Base recipe: {meal.recipe.name}")
+    print(f"has_variant(): {meal.has_variant()}")
+
+    assert meal.has_variant(), "Should have variant"
+
+    effective = meal.get_effective_recipe()
+    print(f"Effective recipe: {effective.name}")
+
+    assert effective.name == f"{recipe.name} (modified)", "Should use compiled recipe name"
+    assert "modified" in meal.get_effective_ingredients_raw()[0], "Should use modified ingredients"
+
+    print("\n✅ PASSED\n")
+
+
+def test_variant_serialization():
+    """Test variant survives serialization round-trip."""
+    print("=" * 60)
+    print("TEST 10: Variant Serialization")
+    print("=" * 60)
+
+    db = DatabaseInterface('data')
+    recipe = db.get_recipe('71247')
+
+    variant = {
+        "variant_id": "variant:snap_test123:2025-10-29:dinner",
+        "base_recipe_id": recipe.id,
+        "patch_ops": [],
+        "compiled_recipe": {
+            "id": "variant:snap_test123:2025-10-29:dinner",
+            "name": "Modified Recipe",
+            "description": "",
+            "ingredients": [],
+            "ingredients_raw": ["test ingredient"],
+            "steps": [],
+            "servings": 4,
+            "serving_size": "",
+            "tags": [],
+        },
+        "warnings": ["Test warning"],
+        "compiled_at": "2025-10-29T10:00:00Z",
+        "compiler_version": "v0"
+    }
+
+    meal = PlannedMeal(
+        date="2025-10-29",
+        meal_type="dinner",
+        recipe=recipe,
+        servings=4,
+        variant=variant
+    )
+
+    # Serialize
+    data = meal.to_dict()
+    print(f"Serialized with {len(data)} keys")
+    assert "variant" in data, "Variant should be in serialized data"
+
+    # Convert to JSON and back
+    json_str = json.dumps(data)
+    data_restored = json.loads(json_str)
+
+    # Deserialize
+    restored = PlannedMeal.from_dict(data_restored)
+
+    print(f"Restored has_variant(): {restored.has_variant()}")
+    assert restored.has_variant(), "Restored meal should have variant"
+    assert restored.variant["variant_id"] == variant["variant_id"], "Variant ID should match"
+    assert restored.get_effective_ingredients_raw() == ["test ingredient"], "Effective ingredients should match"
+
+    print("\n✅ PASSED\n")
+
+
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -289,6 +435,9 @@ def main():
         test_serialization()
         test_backward_compatibility()
         test_display_methods()
+        test_variant_without_variant()
+        test_variant_with_variant()
+        test_variant_serialization()
 
         print("=" * 60)
         print("ALL TESTS PASSED! ✅")
@@ -296,6 +445,7 @@ def main():
         print("\n✅ PlannedMeal successfully embeds Recipe objects")
         print("✅ Scaling, allergen detection, and serialization all work")
         print("✅ Backward compatibility maintained")
+        print("✅ Variant support works correctly")
 
     except Exception as e:
         print(f"\n❌ TEST FAILED:")

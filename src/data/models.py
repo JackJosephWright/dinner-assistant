@@ -342,9 +342,35 @@ class PlannedMeal:
 
     date: str  # ISO format: "2025-01-20"
     meal_type: str  # "breakfast", "lunch", "dinner", "snack"
-    recipe: "Recipe"  # Full Recipe object embedded
+    recipe: "Recipe"  # Full Recipe object embedded (base recipe)
     servings: int  # May differ from recipe.servings
     notes: Optional[str] = None
+    variant: Optional[Dict] = None  # RecipeVariant dict if modified
+
+    def has_variant(self) -> bool:
+        """Check if this meal has a variant (modified recipe)."""
+        return self.variant is not None and 'compiled_recipe' in self.variant
+
+    def get_effective_recipe(self) -> "Recipe":
+        """
+        Get the effective recipe for cooking/shopping.
+
+        If a variant exists, returns the compiled recipe.
+        Otherwise returns the base recipe.
+        """
+        if self.has_variant():
+            return Recipe.from_dict(self.variant['compiled_recipe'])
+        return self.recipe
+
+    def get_effective_ingredients_raw(self) -> List[str]:
+        """
+        Get the effective ingredients_raw for shopping.
+
+        Uses compiled_recipe if variant exists, else base recipe.
+        """
+        if self.has_variant():
+            return self.variant['compiled_recipe'].get('ingredients_raw', [])
+        return self.recipe.ingredients_raw
 
     def get_scaled_recipe(self) -> "Recipe":
         """
@@ -411,13 +437,17 @@ class PlannedMeal:
         Returns:
             Dictionary with all fields, recipe as nested dict
         """
-        return {
+        result = {
             "date": self.date,
             "meal_type": self.meal_type,
-            "recipe": self.recipe.to_dict(),  # Nested recipe dict
+            "recipe": self.recipe.to_dict(),  # Nested recipe dict (base recipe)
             "servings": self.servings,
             "notes": self.notes,
         }
+        # Include variant if present
+        if self.variant is not None:
+            result["variant"] = self.variant
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict) -> "PlannedMeal":
@@ -457,6 +487,7 @@ class PlannedMeal:
             recipe=recipe,
             servings=data["servings"],
             notes=data.get("notes"),
+            variant=data.get("variant"),  # Load variant if present
         )
 
 
