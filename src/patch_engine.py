@@ -434,3 +434,248 @@ def parse_variant_id(variant_id: str) -> tuple[str, str, str]:
         )
 
     return match.groups()
+
+
+# =============================================================================
+# LLM-Based Patch Generation
+# =============================================================================
+
+PATCH_GEN_MODEL = "claude-3-5-haiku-20241022"  # Fast model for patch generation
+
+PATCH_GEN_SYSTEM_PROMPT = """You are a recipe modification assistant. Your job is to parse user requests for recipe modifications and output structured patch operations.
+
+AVAILABLE OPERATIONS:
+1. replace_ingredient: Swap one ingredient for another
+2. add_ingredient: Add a new ingredient (appends to end)
+3. remove_ingredient: Remove an ingredient (user must confirm)
+4. scale_servings: Multiply all quantities by a factor
+
+OUTPUT FORMAT (JSON only):
+{
+  "ops": [
+    {
+      "op": "replace_ingredient",
+      "target_index": <int>,
+      "target_name": "<substring that matches ingredient>",
+      "replacement": {"name": "<new ingredient>", "quantity": "<amount with unit>"},
+      "reason": "user_request"
+    }
+  ],
+  "needs_clarification": false,
+  "clarification_message": null
+}
+
+RULES:
+1. target_index must be the 0-based index of the ingredient in the list
+2. target_name must be a substring that matches the ingredient at that index
+3. For remove_ingredient, set "acknowledged": true (user explicitly asked to remove)
+4. If the request is ambiguous (e.g., "replace the meat" when there are multiple meats), set needs_clarification=true
+5. For scale_servings, use scale_factor (e.g., 2.0 for double, 0.5 for half)
+6. Only output JSON, no explanation text"""
+
+
+def generate_patch_ops(
+    user_request: str,
+    recipe_name: str,
+    ingredients: list[str],
+    client=None,
+) -> PatchGenResult:
+    """
+    Generate patch operations from a user request using LLM.
+
+    Args:
+        user_request: Natural language modification request (e.g., "replace chicken with tofu")
+        recipe_name: Name of the recipe being modified
+        ingredients: List of ingredients_raw from the recipe
+        client: Anthropic client (if None, creates new one)
+
+    Returns:
+        PatchGenResult with ops list or needs_clarification=True
+
+    Raises:
+        ValueError: If client creation fails (no API key)
+    """
+    import time
+    start = time.time()
+
+    # Create client if not provided
+    if client is None:
+        try:
+            from anthropic import Anthropic
+            import os
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ValueError("ANTHROPIC_API_KEY not set")
+            client = Anthropic(api_key=api_key)
+        except Exception as e:
+            logger.error(f"[PATCH_GEN] Failed to create Anthropic client: {e}")
+            raise ValueError(f"Cannot create Anthropic client: {e}")
+
+    # Build ingredient list for context
+    ingredients_text = "\n".join([
+        f"  [{i}] {ing}" for i, ing in enumerate(ingredients)
+    ])
+
+    prompt = f"""Recipe: {recipe_name}
+
+Ingredients (indexed):
+{ingredients_text}
+
+User request: "{user_request}"
+
+Generate the appropriate patch operations. Output JSON only."""
+
+    logger.info(f"[PATCH_GEN] Processing request: '{user_request}' for recipe '{recipe_name}'")
+    logger.info(f"[PATCH_GEN] {len(ingredients)} ingredients in recipe")
+
+    try:
+        response = client.messages.create(
+            model=PATCH_GEN_MODEL,
+            max_tokens=500,
+            system=PATCH_GEN_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        content = response.content[0].text.strip()
+        llm_time = time.time() - start
+
+        logger.info(f"[PATCH_GEN] LLM response in {llm_time:.3f}s: {content[:100]}...")
+
+        # Parse JSON response
+        import json
+
+        # Remove markdown code blocks if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            content = "\n".join(lines[1:-1])
+
+        data = json.loads(content)
+
+        # Build PatchGenResult from response
+        ops = []
+        for op_data in data.get("ops", []):
+            try:
+                ops.append(PatchOp(**op_data))
+            except Exception as e:
+                logger.warning(f"[PATCH_GEN] Invalid op in response: {op_data} - {e}")
+                continue
+
+        result = PatchGenResult(
+            ops=ops,
+            needs_clarification=data.get("needs_clarification", False),
+            clarification_message=data.get("clarification_message"),
+        )
+
+        logger.info(
+            f"[PATCH_GEN] Generated {len(result.ops)} ops, "
+            f"needs_clarification={result.needs_clarification}"
+        )
+
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"[PATCH_GEN] Failed to parse LLM response as JSON: {e}")
+        return PatchGenResult(
+            needs_clarification=True,
+            clarification_message="I couldn't understand that request. Could you rephrase it?"
+        )
+    except Exception as e:
+        logger.error(f"[PATCH_GEN] Error generating patch ops: {e}")
+        return PatchGenResult(
+            needs_clarification=True,
+            clarification_message=f"Something went wrong: {str(e)}"
+        )
+
+
+# =============================================================================
+# High-Level Variant Creation
+# =============================================================================
+
+def create_variant(
+    user_request: str,
+    recipe: dict,
+    snapshot_id: str,
+    date: str,
+    meal_type: str,
+    client=None,
+) -> tuple[dict, list[str]]:
+    """
+    Create a complete variant from a user modification request.
+
+    This is the main entry point for creating recipe variants:
+    1. Generates patch ops from user request
+    2. Validates ops against recipe
+    3. Applies ops to create compiled recipe
+    4. Returns variant dict ready for storage
+
+    Args:
+        user_request: Natural language modification request
+        recipe: Recipe dict with at least 'name', 'ingredients_raw', 'servings'
+        snapshot_id: Snapshot ID for variant ID generation
+        date: Date string (YYYY-MM-DD)
+        meal_type: Meal type (breakfast/lunch/dinner/snack)
+        client: Optional Anthropic client
+
+    Returns:
+        Tuple of (variant_dict, warnings_list)
+        - variant_dict: Ready to store in PlannedMeal.variant
+        - warnings_list: Any warnings about the modification
+
+    Raises:
+        ValueError: If patch generation or validation fails
+    """
+    import time
+
+    recipe_name = recipe.get('name', 'Unknown Recipe')
+    ingredients = recipe.get('ingredients_raw', [])
+    servings = recipe.get('servings', 4)
+
+    logger.info(f"[VARIANT_CREATE] Creating variant for '{recipe_name}'")
+
+    # 1. Generate patch ops
+    gen_result = generate_patch_ops(
+        user_request=user_request,
+        recipe_name=recipe_name,
+        ingredients=ingredients,
+        client=client,
+    )
+
+    if gen_result.needs_clarification:
+        raise ValueError(gen_result.clarification_message or "Could not understand request")
+
+    if not gen_result.ops:
+        raise ValueError("No modifications specified")
+
+    # 2. Validate ops
+    is_valid, errors = validate_ops(gen_result.ops, ingredients)
+    if not is_valid:
+        raise ValueError(f"Invalid modification: {'; '.join(errors)}")
+
+    # 3. Apply ops
+    new_ingredients, new_servings = apply_ops(gen_result.ops, ingredients, servings)
+
+    # 4. Build compiled recipe
+    variant_id = create_variant_id(snapshot_id, date, meal_type)
+
+    compiled_recipe = {
+        **recipe,
+        'id': variant_id,
+        'name': f"{recipe_name} (modified)",
+        'ingredients_raw': new_ingredients,
+        'servings': new_servings,
+    }
+
+    # 5. Build variant dict
+    variant = {
+        'variant_id': variant_id,
+        'base_recipe_id': recipe.get('id', 'unknown'),
+        'patch_ops': [op.model_dump() for op in gen_result.ops],
+        'compiled_recipe': compiled_recipe,
+        'warnings': [],  # Phase 2 will add warnings
+        'compiled_at': datetime.utcnow().isoformat() + 'Z',
+        'compiler_version': 'v0',
+    }
+
+    logger.info(f"[VARIANT_CREATE] Created variant {variant_id} with {len(gen_result.ops)} ops")
+
+    return variant, []
