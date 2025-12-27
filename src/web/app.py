@@ -530,11 +530,21 @@ def plan_page():
     current_plan = None
 
     # Phase 5: Try loading from snapshot first
-    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+    # Note: snapshot_id == meal_plan_id in this codebase
+    # IMPORTANT: Chatbot's current plan takes priority over stale session data
+    # (background threads can't update session, so session may be outdated)
+    snapshot_id = session.get('snapshot_id')
+    if chatbot_instance and chatbot_instance.current_meal_plan_id:
+        if chatbot_instance.current_meal_plan_id != snapshot_id:
+            logger.info(f"[/plan] Updating stale session snapshot_id: {snapshot_id} -> {chatbot_instance.current_meal_plan_id}")
+            snapshot_id = chatbot_instance.current_meal_plan_id
+            session['snapshot_id'] = snapshot_id  # Sync session
+
+    if SNAPSHOTS_ENABLED and snapshot_id:
         try:
-            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            snapshot = assistant.db.get_snapshot(snapshot_id)
             if snapshot and snapshot.get('planned_meals'):
-                log_snapshot_load(session['snapshot_id'])
+                log_snapshot_load(snapshot_id)
 
                 # Transform snapshot data to frontend format
                 enriched_meals = []
@@ -649,13 +659,21 @@ def shop_page():
     # Phase 3: Try snapshot first, fallback to legacy
     current_list = None
 
-    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+    # IMPORTANT: Chatbot's current plan takes priority over stale session data
+    snapshot_id = session.get('snapshot_id')
+    if chatbot_instance and chatbot_instance.current_meal_plan_id:
+        if chatbot_instance.current_meal_plan_id != snapshot_id:
+            logger.info(f"[/shop] Updating stale session snapshot_id: {snapshot_id} -> {chatbot_instance.current_meal_plan_id}")
+            snapshot_id = chatbot_instance.current_meal_plan_id
+            session['snapshot_id'] = snapshot_id  # Sync session
+
+    if SNAPSHOTS_ENABLED and snapshot_id:
         try:
-            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            snapshot = assistant.db.get_snapshot(snapshot_id)
             if snapshot and snapshot.get('grocery_list'):
                 current_list = snapshot['grocery_list']
-                log_snapshot_load(session['snapshot_id'])
-                logger.info(f"Phase 3: Shop tab loaded from snapshot {session['snapshot_id']}")
+                log_snapshot_load(snapshot_id)
+                logger.info(f"Phase 3: Shop tab loaded from snapshot {snapshot_id}")
             elif snapshot and not snapshot.get('grocery_list'):
                 logger.info(f"Phase 3: Snapshot exists but grocery_list is None, using legacy fallback")
                 log_legacy_fallback("shop - grocery_list not yet generated")
@@ -721,17 +739,41 @@ def cook_page():
     current_plan = None
 
     # Phase 5: Try loading from snapshot first
-    if SNAPSHOTS_ENABLED and 'snapshot_id' in session:
+    # Note: snapshot_id == meal_plan_id in this codebase
+    # IMPORTANT: Chatbot's current plan takes priority over stale session data
+    snapshot_id = session.get('snapshot_id')
+    if chatbot_instance and chatbot_instance.current_meal_plan_id:
+        if chatbot_instance.current_meal_plan_id != snapshot_id:
+            logger.info(f"[/cook] Updating stale session snapshot_id: {snapshot_id} -> {chatbot_instance.current_meal_plan_id}")
+            snapshot_id = chatbot_instance.current_meal_plan_id
+            session['snapshot_id'] = snapshot_id  # Sync session
+
+    if SNAPSHOTS_ENABLED and snapshot_id:
         try:
-            snapshot = assistant.db.get_snapshot(session['snapshot_id'])
+            snapshot = assistant.db.get_snapshot(snapshot_id)
             if snapshot and snapshot.get('planned_meals'):
-                log_snapshot_load(session['snapshot_id'])
+                log_snapshot_load(snapshot_id)
 
                 # Transform snapshot data to frontend format
                 enriched_meals = []
                 for meal_dict in snapshot['planned_meals']:
-                    # Flatten recipe fields for frontend compatibility
-                    if 'recipe' in meal_dict and meal_dict['recipe']:
+                    # Check for variant first - use compiled_recipe if exists
+                    variant = meal_dict.get('variant')
+                    if variant and variant.get('compiled_recipe'):
+                        # Use variant data for Cook page
+                        compiled = variant['compiled_recipe']
+                        meal_dict['recipe_id'] = variant.get('variant_id', compiled.get('id'))
+                        meal_dict['recipe_name'] = compiled.get('name')
+                        meal_dict['description'] = compiled.get('description')
+                        meal_dict['estimated_time'] = compiled.get('estimated_time')
+                        meal_dict['cuisine'] = compiled.get('cuisine')
+                        meal_dict['difficulty'] = compiled.get('difficulty')
+                        meal_dict['recipe'] = compiled  # Use compiled recipe for embedding
+                        meal_dict['has_variant'] = True
+                        meal_dict['warnings'] = variant.get('warnings', [])
+                        logger.info(f"[COOK] Using variant for {meal_dict.get('date')}: {compiled.get('name')}")
+                    elif 'recipe' in meal_dict and meal_dict['recipe']:
+                        # Flatten recipe fields for frontend compatibility
                         recipe = meal_dict['recipe']
                         meal_dict['recipe_id'] = recipe.get('id')
                         meal_dict['recipe_name'] = recipe.get('name')
@@ -739,6 +781,7 @@ def cook_page():
                         meal_dict['estimated_time'] = recipe.get('estimated_time')
                         meal_dict['cuisine'] = recipe.get('cuisine')
                         meal_dict['difficulty'] = recipe.get('difficulty')
+                        meal_dict['has_variant'] = False
 
                     # Format date nicely (e.g., "Friday, November 1")
                     date_str = meal_dict.get('date')
@@ -1663,6 +1706,15 @@ def api_chat():
         snapshot_id_for_bg = session.get('snapshot_id') if SNAPSHOTS_ENABLED else None
         user_id_for_bg = session.get('user_id', 1)
 
+        # Pass snapshot_id to chatbot for variant operations
+        # Note: snapshot_id == current_meal_plan_id in this codebase (both use mp_{week}_{timestamp})
+        if not snapshot_id_for_bg and chatbot_instance.current_meal_plan_id:
+            snapshot_id_for_bg = chatbot_instance.current_meal_plan_id
+            logger.info(f"Using chatbot.current_meal_plan_id as snapshot_id: {snapshot_id_for_bg}")
+        if snapshot_id_for_bg:
+            chatbot_instance.current_snapshot_id = snapshot_id_for_bg
+            logger.info(f"Set chatbot snapshot_id: {snapshot_id_for_bg}")
+
         def process_chat_in_background():
             """Process chat asynchronously and broadcast state changes."""
             try:
@@ -1957,7 +2009,8 @@ def api_get_current_plan():
             return jsonify({"success": False, "error": "No active meal plan"}), 404
 
         user_id = session.get('user_id', 1)
-        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
+        # Use get_effective_meal_plan to get variant data from snapshot
+        meal_plan = assistant.db.get_effective_meal_plan(meal_plan_id, user_id=user_id)
         if not meal_plan:
             return jsonify({"success": False, "error": "Meal plan not found"}), 404
 
@@ -1966,14 +2019,27 @@ def api_get_current_plan():
         enriched_meals = []
         for meal in meal_plan.meals:
             meal_dict = meal.to_dict()
-            # Flatten recipe fields for frontend compatibility
-            if meal.recipe:
+            # Check for variant - use compiled_recipe if exists
+            if meal.variant and 'compiled_recipe' in meal.variant:
+                compiled = meal.variant['compiled_recipe']
+                meal_dict['recipe_id'] = meal.variant.get('variant_id', compiled.get('id'))
+                meal_dict['recipe_name'] = compiled.get('name')
+                meal_dict['description'] = compiled.get('description')
+                meal_dict['estimated_time'] = compiled.get('estimated_time')
+                meal_dict['cuisine'] = compiled.get('cuisine')
+                meal_dict['difficulty'] = compiled.get('difficulty')
+                meal_dict['recipe'] = compiled  # Include full recipe for Cook page
+                meal_dict['has_variant'] = True
+                meal_dict['warnings'] = meal.variant.get('warnings', [])
+            elif meal.recipe:
+                # Flatten recipe fields for frontend compatibility
                 meal_dict['recipe_id'] = meal.recipe.id
                 meal_dict['recipe_name'] = meal.recipe.name
                 meal_dict['description'] = meal.recipe.description
                 meal_dict['estimated_time'] = meal.recipe.estimated_time
                 meal_dict['cuisine'] = meal.recipe.cuisine
                 meal_dict['difficulty'] = meal.recipe.difficulty
+                meal_dict['has_variant'] = False
             # Rename 'date' to 'meal_date' for clarity
             meal_dict['meal_date'] = meal_dict.pop('date', None)
             enriched_meals.append(meal_dict)
@@ -2011,7 +2077,8 @@ def api_get_plan_by_id(meal_plan_id):
     """Get meal plan by ID (for cook page and localStorage-based lookups)."""
     user_id = session.get('user_id', 1)
     try:
-        meal_plan = assistant.db.get_meal_plan(meal_plan_id, user_id=user_id)
+        # Use get_effective_meal_plan to get variant data from snapshot
+        meal_plan = assistant.db.get_effective_meal_plan(meal_plan_id, user_id=user_id)
         if not meal_plan:
             return jsonify({"success": False, "error": "Meal plan not found"}), 404
 
@@ -2019,13 +2086,26 @@ def api_get_plan_by_id(meal_plan_id):
         enriched_meals = []
         for meal in meal_plan.meals:
             meal_dict = meal.to_dict()
-            if meal.recipe:
+            # Check for variant - use compiled_recipe if exists
+            if meal.variant and 'compiled_recipe' in meal.variant:
+                compiled = meal.variant['compiled_recipe']
+                meal_dict['recipe_id'] = meal.variant.get('variant_id', compiled.get('id'))
+                meal_dict['recipe_name'] = compiled.get('name')
+                meal_dict['description'] = compiled.get('description')
+                meal_dict['estimated_time'] = compiled.get('estimated_time')
+                meal_dict['cuisine'] = compiled.get('cuisine')
+                meal_dict['difficulty'] = compiled.get('difficulty')
+                meal_dict['recipe'] = compiled  # Include full recipe for Cook page
+                meal_dict['has_variant'] = True
+                meal_dict['warnings'] = meal.variant.get('warnings', [])
+            elif meal.recipe:
                 meal_dict['recipe_id'] = meal.recipe.id
                 meal_dict['recipe_name'] = meal.recipe.name
                 meal_dict['description'] = meal.recipe.description
                 meal_dict['estimated_time'] = meal.recipe.estimated_time
                 meal_dict['cuisine'] = meal.recipe.cuisine
                 meal_dict['difficulty'] = meal.recipe.difficulty
+                meal_dict['has_variant'] = False
             meal_dict['meal_date'] = meal_dict.pop('date', None)
             enriched_meals.append(meal_dict)
 

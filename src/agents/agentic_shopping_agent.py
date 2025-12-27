@@ -173,7 +173,9 @@ class AgenticShoppingAgent:
         """
         try:
             user_id = state["user_id"]
-            meal_plan = self.db.get_meal_plan(state["meal_plan_id"], user_id=user_id)
+            # Use get_effective_meal_plan to load from snapshot (has variants) first,
+            # falling back to legacy meal_plans table if no snapshot exists
+            meal_plan = self.db.get_effective_meal_plan(state["meal_plan_id"], user_id=user_id)
             if not meal_plan:
                 state["error"] = "Meal plan not found"
                 return state

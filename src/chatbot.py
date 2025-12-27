@@ -138,6 +138,8 @@ class MealPlanningChatbot:
             if recent_plans:
                 self.last_meal_plan = recent_plans[0]
                 self.current_meal_plan_id = recent_plans[0].id
+                # Note: snapshot_id == meal_plan_id in this codebase
+                self.current_snapshot_id = recent_plans[0].id
                 if self.verbose:
                     self._verbose_output(f"📋 Resumed plan for week of {recent_plans[0].week_of}")
         except Exception as e:
@@ -1133,6 +1135,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 )
                 if result["success"]:
                     self.current_meal_plan_id = result["meal_plan_id"]
+                    # Note: snapshot_id == meal_plan_id in this codebase
+                    self.current_snapshot_id = result["meal_plan_id"]
                     # Format nicely
                     output = f"Created meal plan: {result['meal_plan_id']}\n\n"
                     output += "Meals:\n"
@@ -1363,6 +1367,8 @@ IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy 
                 persist_time = time.time() - persist_start
                 logger.info(f"[PERSIST] Saved meal plan {plan_id} in {persist_time:.3f}s")
                 self.current_meal_plan_id = plan_id
+                # Note: snapshot_id == meal_plan_id in this codebase
+                self.current_snapshot_id = plan_id
 
                 # Cache the plan in memory for follow-up questions
                 self.last_meal_plan = plan

@@ -101,6 +101,7 @@ class PatchGenResult(BaseModel):
     clarification_message explains what info is needed.
     """
     ops: list[PatchOp] = Field(default_factory=list)
+    suggested_name: Optional[str] = None  # LLM-suggested name reflecting modification
     needs_clarification: bool = False
     clarification_message: Optional[str] = None
 
@@ -461,6 +462,7 @@ OUTPUT FORMAT (JSON only):
       "reason": "user_request"
     }
   ],
+  "suggested_name": "<new recipe name reflecting the modification>",
   "needs_clarification": false,
   "clarification_message": null
 }
@@ -471,7 +473,8 @@ RULES:
 3. For remove_ingredient, set "acknowledged": true (user explicitly asked to remove)
 4. If the request is ambiguous (e.g., "replace the meat" when there are multiple meats), set needs_clarification=true
 5. For scale_servings, use scale_factor (e.g., 2.0 for double, 0.5 for half)
-6. Only output JSON, no explanation text"""
+6. suggested_name should reflect the modification (e.g., "Vegetarian Pineapple Curry" -> "Vegetarian Mango Curry" when replacing pineapple with mango)
+7. Only output JSON, no explanation text"""
 
 
 def generate_patch_ops(
@@ -562,12 +565,14 @@ Generate the appropriate patch operations. Output JSON only."""
 
         result = PatchGenResult(
             ops=ops,
+            suggested_name=data.get("suggested_name"),
             needs_clarification=data.get("needs_clarification", False),
             clarification_message=data.get("clarification_message"),
         )
 
         logger.info(
             f"[PATCH_GEN] Generated {len(result.ops)} ops, "
+            f"suggested_name='{result.suggested_name}', "
             f"needs_clarification={result.needs_clarification}"
         )
 
@@ -657,13 +662,21 @@ def create_variant(
     # 4. Build compiled recipe
     variant_id = create_variant_id(snapshot_id, date, meal_type)
 
+    # Copy recipe but EXCLUDE ingredients_structured (stale after patch)
+    # The shopping agent will fall back to ingredients_raw (which is patched)
     compiled_recipe = {
-        **recipe,
+        k: v for k, v in recipe.items() if k != 'ingredients_structured'
+    }
+
+    # Use LLM-suggested name if available, otherwise fallback
+    new_name = gen_result.suggested_name or f"{recipe_name} (modified)"
+
+    compiled_recipe.update({
         'id': variant_id,
-        'name': f"{recipe_name} (modified)",
+        'name': new_name,
         'ingredients_raw': new_ingredients,
         'servings': new_servings,
-    }
+    })
 
     # 5. Generate warnings
     warnings = generate_warnings(

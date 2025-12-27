@@ -954,6 +954,42 @@ class DatabaseInterface:
                 )
             return None
 
+    def get_effective_meal_plan(self, plan_id: str, user_id: int = None) -> Optional[MealPlan]:
+        """
+        Get the most up-to-date meal plan representation.
+
+        Prefers snapshot (contains variants + unified state), falls back to
+        legacy meal_plans table if no snapshot exists.
+
+        Args:
+            plan_id: Meal plan ID (also used as snapshot_id)
+            user_id: Optional user ID filter
+
+        Returns:
+            MealPlan object with variants if available, or None
+        """
+        # Try snapshot first (snapshot_id == plan_id in this codebase)
+        snapshot = self.get_snapshot(plan_id)
+
+        if snapshot and snapshot.get('planned_meals'):
+            # Snapshot exists with planned_meals - use it (has variants)
+            logger.info(f"[MEAL_PLAN_LOAD] source=snapshot snapshot_id={plan_id} "
+                       f"meals={len(snapshot.get('planned_meals', []))}")
+            try:
+                return MealPlan(
+                    id=snapshot['id'],
+                    week_of=snapshot['week_of'],
+                    created_at=datetime.fromisoformat(snapshot['created_at']),
+                    preferences_applied={},  # Not stored in snapshot
+                    meals=[PlannedMeal.from_dict(m) for m in snapshot['planned_meals']],
+                )
+            except Exception as e:
+                logger.warning(f"[MEAL_PLAN_LOAD] Failed to parse snapshot, falling back: {e}")
+
+        # Fall back to legacy meal_plans table
+        logger.info(f"[MEAL_PLAN_LOAD] source=legacy_meal_plans plan_id={plan_id}")
+        return self.get_meal_plan(plan_id, user_id=user_id)
+
     def get_recent_meal_plans(self, user_id: int = 1, limit: int = 10) -> List[MealPlan]:
         """
         Get recent meal plans for a user.

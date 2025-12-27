@@ -245,7 +245,7 @@
 const embeddedRecipes = {};
 {% if current_plan %}
 {% for meal in current_plan.meals %}
-embeddedRecipes[{{ meal.recipe_id }}] = {{ meal.recipe | tojson }};
+embeddedRecipes["{{ meal.recipe_id }}"] = {{ meal.recipe | tojson }};
 {% endfor %}
 {% endif %}
 
