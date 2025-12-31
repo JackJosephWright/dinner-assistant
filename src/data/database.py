@@ -571,6 +571,7 @@ class DatabaseInterface:
         include_tags: Optional[List[str]] = None,
         exclude_tags: Optional[List[str]] = None,
         exclude_ids: Optional[List[str]] = None,
+        query: Optional[str] = None,
         limit: int = 80,
         seed: Optional[int] = None,
     ) -> List[Recipe]:
@@ -584,6 +585,7 @@ class DatabaseInterface:
             include_tags: Tags that recipes MUST have
             exclude_tags: Tags that recipes must NOT have
             exclude_ids: Recipe IDs to exclude
+            query: Search query to match against name, description, or ingredients
             limit: Maximum number of results
             seed: RNG seed for reproducible sampling (e.g., hash(user_id + week_of))
                   If None, uses random sampling (not reproducible)
@@ -613,7 +615,7 @@ class DatabaseInterface:
             if use_recipe_tags and include_tags:
                 # Phase 2: Use optimized recipe_tags index queries
                 candidates = self._search_with_recipe_tags(
-                    cursor, include_tags, exclude_tags, exclude_ids, limit, seed
+                    cursor, include_tags, exclude_tags, exclude_ids, query, limit, seed
                 )
                 if candidates is not None:
                     elapsed_ms = (time.time() - start_time) * 1000
@@ -640,6 +642,12 @@ class DatabaseInterface:
                 placeholders = ",".join(["?" for _ in exclude_ids])
                 sql += f" AND id NOT IN ({placeholders})"
                 params.extend(exclude_ids)
+
+            if query:
+                # Search query in name, description, or ingredients
+                sql += " AND (name LIKE ? OR description LIKE ? OR ingredients LIKE ?)"
+                search_term = f"%{query}%"
+                params.extend([search_term, search_term, search_term])
 
             cursor.execute(sql, params)
             all_rowids = [r[0] for r in cursor.fetchall()]
@@ -683,6 +691,7 @@ class DatabaseInterface:
         include_tags: List[str],
         exclude_tags: Optional[List[str]],
         exclude_ids: Optional[List[str]],
+        query: Optional[str],
         limit: int,
         seed: Optional[int],
     ) -> Optional[List[Recipe]]:
@@ -740,6 +749,13 @@ class DatabaseInterface:
                 exclude_ids_clause = f" AND rt.recipe_id NOT IN ({placeholders})"
                 params.extend(exclude_ids)
 
+            # Query clause for text search
+            query_clause = ""
+            if query:
+                query_clause = " AND (r.name LIKE ? OR r.description LIKE ? OR r.ingredients LIKE ?)"
+                search_term = f"%{query}%"
+                params.extend([search_term, search_term, search_term])
+
             # Fetch candidates (more than limit to allow for sampling variety)
             fetch_limit = min(limit * 5, 500)  # Get up to 5x limit for better sampling
             params.append(fetch_limit)
@@ -752,6 +768,7 @@ class DatabaseInterface:
                 {exists_clauses}
                 {not_exists_clauses}
                 {exclude_ids_clause}
+                {query_clause}
                 LIMIT ?
             """
 

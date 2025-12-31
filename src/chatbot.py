@@ -482,11 +482,17 @@ RULES:
             # Per-day seed variation (same week, different days get different samples)
             day_seed = seed_base + day_idx
 
+            # Build search query from unhandled constraints (user-specified recipe keywords)
+            search_query = None
+            if req.unhandled:
+                search_query = " ".join(req.unhandled)
+
             # Query database using seeded sampling (Phase 1 latency fix)
             pool = self.assistant.db.search_recipes_sampled(
                 include_tags=include_tags,
                 exclude_tags=exclude_tags,
                 exclude_ids=[str(id) for id in exclude_ids] if exclude_ids else None,
+                query=search_query,
                 limit=POOL_SIZE,
                 seed=day_seed,
             )
