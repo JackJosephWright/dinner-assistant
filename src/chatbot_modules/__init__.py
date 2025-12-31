@@ -18,6 +18,10 @@ from chatbot_modules.tools_config import (
     get_tools,
     TOOL_DEFINITIONS,
 )
+from chatbot_modules.tool_registry import (
+    execute_tool,
+    TOOL_HANDLERS,
+)
 
 __all__ = [
     "build_per_day_pools",
@@ -31,4 +35,6 @@ __all__ = [
     "build_system_prompt",
     "get_tools",
     "TOOL_DEFINITIONS",
+    "execute_tool",
+    "TOOL_HANDLERS",
 ]

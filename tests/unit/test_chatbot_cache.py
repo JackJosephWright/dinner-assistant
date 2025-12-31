@@ -333,9 +333,9 @@ class TestBackupQueue:
 
         chatbot = MealPlanningChatbot(verbose=False)
 
-        # Direct match
-        assert chatbot._check_backup_match("different chicken dish", "chicken") is True
-        assert chatbot._check_backup_match("another pasta option", "pasta") is True
+        # Direct match returns "auto" (not True/False - API changed in refactoring)
+        assert chatbot._check_backup_match("different chicken dish", "chicken") == "auto"
+        assert chatbot._check_backup_match("another pasta option", "pasta") == "auto"
 
     @patch('src.chatbot.MealPlanningAssistant')
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
@@ -348,10 +348,10 @@ class TestBackupQueue:
 
         chatbot = MealPlanningChatbot(verbose=False)
 
-        # Related terms
-        assert chatbot._check_backup_match("poultry recipe", "chicken") is True
-        assert chatbot._check_backup_match("steak dinner", "beef") is True
-        assert chatbot._check_backup_match("spaghetti meal", "pasta") is True
+        # Related terms return "auto" (not True/False - API changed in refactoring)
+        assert chatbot._check_backup_match("poultry recipe", "chicken") == "auto"
+        assert chatbot._check_backup_match("steak dinner", "beef") == "auto"
+        assert chatbot._check_backup_match("spaghetti meal", "pasta") == "auto"
 
     @patch('src.chatbot.MealPlanningAssistant')
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
@@ -364,10 +364,10 @@ class TestBackupQueue:
 
         chatbot = MealPlanningChatbot(verbose=False)
 
-        # Modifiers
-        assert chatbot._check_backup_match("swap this chicken", "chicken") is True
-        assert chatbot._check_backup_match("change pasta meal", "pasta") is True
-        assert chatbot._check_backup_match("replace this beef", "beef") is True
+        # Modifiers return "auto" (not True/False - API changed in refactoring)
+        assert chatbot._check_backup_match("swap this chicken", "chicken") == "auto"
+        assert chatbot._check_backup_match("change pasta meal", "pasta") == "auto"
+        assert chatbot._check_backup_match("replace this beef", "beef") == "auto"
 
     @patch('src.chatbot.MealPlanningAssistant')
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
@@ -380,9 +380,9 @@ class TestBackupQueue:
 
         chatbot = MealPlanningChatbot(verbose=False)
 
-        # No match
-        assert chatbot._check_backup_match("fish recipe", "chicken") is False
-        assert chatbot._check_backup_match("vegetarian dish", "beef") is False
+        # No match returns "no_match" (not True/False - API changed in refactoring)
+        assert chatbot._check_backup_match("fish recipe", "chicken") == "no_match"
+        assert chatbot._check_backup_match("vegetarian dish", "beef") == "no_match"
 
     @patch('src.chatbot.MealPlanningAssistant')
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})
@@ -424,11 +424,12 @@ class TestBackupQueue:
         assert "chicken" in result  # Category used
         assert "cached backups" in result or "<10ms" in result
 
-        # Verify DB was updated
+        # Verify DB was updated (user_id=1 is default)
         mock_assistant.db.swap_meal_in_plan.assert_called_once_with(
             plan_id="test-plan-789",
             date="2025-01-20",
-            new_recipe_id="2"
+            new_recipe_id="2",
+            user_id=1
         )
 
         # Verify cached plan was updated
