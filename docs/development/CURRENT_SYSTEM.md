@@ -629,7 +629,7 @@ tools = [
 
 ### Future Enhancements
 
-- Web UI with tabs (FastAPI + React)
+- Web UI with tabs (Flask + Jinja2)
 - Multi-user support
 - Advanced preferences
 - Meal plan history/favorites

@@ -391,7 +391,7 @@ Use cases, examples, etc.
 - Performance optimizations
 
 ### Medium Priority
-- Web interface (Flask/FastAPI)
+- Web interface (Flask)
 - Additional cuisine support
 - Recipe recommendation improvements
 - Shopping list enhancements
