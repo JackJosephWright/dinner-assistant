@@ -1840,7 +1840,17 @@ def api_onboarding_answer():
 def api_preferences_reset():
     """Reset preferences to trigger onboarding again."""
     try:
-        # Clear all session data to trigger onboarding
+        user_id = session.get('user_id', 1)
+
+        # Reset onboarding_completed flag in database
+        with assistant.db._get_user_connection() as conn:
+            conn.execute(
+                "UPDATE user_profile SET onboarding_completed = FALSE WHERE user_id = ?",
+                (user_id,)
+            )
+            conn.commit()
+
+        # Clear all session data
         session.pop('onboarding_data', None)
         session.pop('onboarding_step', None)
         session.pop('onboarding_flow', None)
