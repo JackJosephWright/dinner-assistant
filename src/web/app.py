@@ -515,8 +515,9 @@ def plan_page():
     # Restore session from DB if needed
     restore_session_from_db()
 
-    # Check if user needs onboarding
-    needs_onboarding = not check_onboarding_status(assistant.db)
+    # Check if user needs onboarding (must use their user_id, not default)
+    user_id = session.get('user_id', 1)
+    needs_onboarding = not check_onboarding_status(assistant.db, user_id=user_id)
 
     # Get current meal plan if exists
     current_plan = None
