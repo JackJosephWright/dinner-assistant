@@ -521,10 +521,11 @@ def handle_plan_meals_smart(chatbot, tool_input: Dict[str, Any]) -> str:
         total_time = time.time() - plan_start_time
         logger.info(f"[PLAN-TIMING] Generate+FuzzyMatch total={total_time*1000:.0f}ms for {num_days} days")
 
-        # Return success JSON
+        # Return success JSON (ensure sorted by date for consistent display)
+        sorted_plan_meals = sorted(plan.meals, key=lambda m: m.date)
         meals_summary = [
             {"date": m.date, "name": m.recipe.name, "generated": meal_names.get(m.date, "")}
-            for m in plan.meals
+            for m in sorted_plan_meals
         ]
 
         return json.dumps({

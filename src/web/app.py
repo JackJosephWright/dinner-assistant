@@ -1886,8 +1886,10 @@ def api_get_current_plan():
 
         # Use embedded Recipe objects from PlannedMeal (Phase 2 enhancement)
         # No need to fetch recipes separately - they're already embedded!
+        # Sort meals by date to ensure chronological order in UI
+        sorted_meals = sorted(meal_plan.meals, key=lambda m: m.date)
         enriched_meals = []
-        for meal in meal_plan.meals:
+        for meal in sorted_meals:
             meal_dict = meal.to_dict()
             # Check for variant - use compiled_recipe if exists
             if meal.variant and 'compiled_recipe' in meal.variant:
