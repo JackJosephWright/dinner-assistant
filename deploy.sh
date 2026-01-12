@@ -9,7 +9,7 @@
 set -e
 
 # Configuration
-PROJECT_ID="dinner-assistant-479014"
+PROJECT_ID="stone-net-479014-j1"
 REGION="us-central1"
 SERVICE_NAME="dinner-assistant"
 IMAGE_NAME="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
