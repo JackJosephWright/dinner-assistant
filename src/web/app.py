@@ -884,6 +884,12 @@ def api_swap_meal():
 
         if result.get("success"):
             user_id = session.get('user_id', 1)
+
+            # Invalidate old shopping list (meal plan changed, list is stale)
+            if 'shopping_list_id' in session:
+                logger.info(f"Clearing stale shopping_list_id from session after swap")
+                session.pop('shopping_list_id', None)
+
             # Update snapshot after swap
             if 'snapshot_id' in session:
                 try:
@@ -1009,6 +1015,11 @@ def api_swap_meal_direct():
 
         if not updated_plan:
             return jsonify({"success": False, "error": "Failed to update meal plan"}), 500
+
+        # Invalidate old shopping list (meal plan changed, list is stale)
+        if 'shopping_list_id' in session:
+            logger.info(f"Clearing stale shopping_list_id from session after direct swap")
+            session.pop('shopping_list_id', None)
 
         # Update snapshot after swap
         if 'snapshot_id' in session:

@@ -12,6 +12,7 @@ def build_system_prompt(
     current_meal_plan_id: Optional[str],
     current_shopping_list_id: Optional[str],
     last_meal_plan: Optional[Any],
+    selected_dates: Optional[List[str]] = None,
 ) -> str:
     """
     Build the system prompt for the LLM.
@@ -20,6 +21,7 @@ def build_system_prompt(
         current_meal_plan_id: Current meal plan ID if any
         current_shopping_list_id: Current shopping list ID if any
         last_meal_plan: The last meal plan object (with meals list)
+        selected_dates: List of dates selected by user from UI (YYYY-MM-DD format)
 
     Returns:
         System prompt string for the LLM
@@ -29,6 +31,18 @@ def build_system_prompt(
         context.append(f"Current meal plan ID: {current_meal_plan_id}")
     if current_shopping_list_id:
         context.append(f"Current shopping list ID: {current_shopping_list_id}")
+
+    # Add selected dates context - this tells the LLM it can immediately call plan_meals_smart
+    if selected_dates:
+        dates_with_days = []
+        for date_str in selected_dates:
+            try:
+                dt = datetime.fromisoformat(date_str)
+                dates_with_days.append(f"{date_str} ({dt.strftime('%A')})")
+            except ValueError:
+                dates_with_days.append(date_str)
+        context.append(f"User has selected these dates for planning: {', '.join(dates_with_days)}")
+        context.append(f"Number of days to plan: {len(selected_dates)}")
 
     context_str = "\n".join(context) if context else "No active plans yet."
 
@@ -58,6 +72,7 @@ Current context:
 
 When users ask about meal planning:
 - IMMEDIATELY call plan_meals_smart to create the plan - don't search first
+- If "User has selected these dates for planning" appears in Current context, DO NOT ask how many days - just call plan_meals_smart immediately (it will use those dates)
 - ALWAYS use plan_meals_smart (never use plan_meals or search_recipes for planning)
 - For CUISINE-SPECIFIC requests (e.g., "French meals", "Italian week", "Asian dishes"):
   * Call plan_meals_smart DIRECTLY with the cuisine as search_query
@@ -71,6 +86,10 @@ When users ask about meal planning:
   * The LLM selector automatically prioritizes user's specific requirements
   * DO NOT create generic plan + multiple swaps (inefficient - wastes 5-10 LLM calls)
   * Example: User wants "5 meals, one ramen, one pasta" → call plan_meals_smart(num_days=5) [search_query defaults to "dinner"]
+
+CRITICAL: After creating a plan, STOP and present it to the user. Do NOT automatically swap meals or "improve" the plan. Only swap when the user EXPLICITLY asks to change a meal.
+
+IMPORTANT: When plan_meals_smart returns JSON with "status": "complete", the plan is SAVED and ready. Present the meals list to the user in a friendly format. Do NOT call plan_meals_smart again - the plan is already created and saved.
 
 When users want to change a meal:
 - Use show_current_plan to see the current plan if needed
@@ -111,29 +130,18 @@ Working with cached meal plans:
 - These tools work on the cached plan and are MUCH faster than re-fetching data
 - Only use get_cooking_guide for recipes that are NOT in the current plan
 
+Working with favorites:
+- Use show_favorites when user asks "what are my favorites?" or "show saved recipes"
+- Use add_favorite when user wants to star a recipe (from current plan or search results)
+- Use remove_favorite to unstar a recipe
+- Favorites are automatically considered when generating meal plans - you don't need to explicitly ask
+- The planning system may include 1-2 favorites naturally when they fit the request
+
 IMPORTANT: Keep responses SHORT and to the point. Users want speed over lengthy explanations. Confirm actions with 1-2 sentences max. BUT ALWAYS answer the user's actual question based on tool results."""
 
 
 # Tool definitions - static configuration
 TOOL_DEFINITIONS: List[Dict[str, Any]] = [
-    {
-        "name": "plan_meals",
-        "description": "DEPRECATED - use plan_meals_smart instead. This tool ignores cuisine requirements and is slower. Only use if plan_meals_smart fails.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "week_of": {
-                    "type": "string",
-                    "description": "ISO date for Monday of the week (YYYY-MM-DD). Optional, defaults to next week.",
-                },
-                "num_days": {
-                    "type": "integer",
-                    "description": "Number of days to plan (default: 7)",
-                    "default": 7,
-                },
-            },
-        },
-    },
     {
         "name": "plan_meals_smart",
         "description": "Create a meal plan using enriched recipe database with smart filtering. Supports allergen filtering, time constraints, and natural language requests. USE THIS for custom planning requests. For multi-requirement requests (e.g., 'one ramen, one spaghetti, three other meals'), use broad search_query like 'dinner' and the LLM will prioritize specific requirements from user's message.",
@@ -401,6 +409,53 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
                 },
             },
             "required": ["date"],
+        },
+    },
+    # Favorites tools
+    {
+        "name": "show_favorites",
+        "description": "Show user's favorite recipes (starred and auto-learned from 5-star ratings). Use when user asks 'what are my favorites?', 'show my saved recipes', or 'list favorites'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of favorites to show (default: 10)",
+                    "default": 10,
+                },
+            },
+        },
+    },
+    {
+        "name": "add_favorite",
+        "description": "Star a recipe as a favorite. Use when user says 'save this recipe', 'add to favorites', 'star this', or 'favorite this'. Can add from current meal plan or search results.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipe_id": {
+                    "type": "string",
+                    "description": "Recipe ID to star (from current plan or search results)",
+                },
+                "recipe_name": {
+                    "type": "string",
+                    "description": "Recipe name (for display)",
+                },
+            },
+            "required": ["recipe_id", "recipe_name"],
+        },
+    },
+    {
+        "name": "remove_favorite",
+        "description": "Remove a recipe from favorites. Use when user says 'unstar', 'remove from favorites', or 'unfavorite'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recipe_id": {
+                    "type": "string",
+                    "description": "Recipe ID to unstar",
+                },
+            },
+            "required": ["recipe_id"],
         },
     },
 ]

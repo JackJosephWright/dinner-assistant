@@ -5,6 +5,9 @@ This test measures how long it takes to generate a meal plan with the
 simple command: "make me a meal plan"
 
 Run with: pytest tests/performance/test_simple_timing.py -v -s
+
+NOTE: These tests require a running server at localhost:5000.
+They will be skipped if the server is not available.
 """
 
 import pytest
@@ -19,6 +22,22 @@ from .instrumentation import (
 
 
 BASE_URL = "http://127.0.0.1:5000"
+
+
+def server_is_running():
+    """Check if the web server is running."""
+    try:
+        response = requests.get(f"{BASE_URL}/api/health", timeout=2)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+# Skip all tests in this module if server is not running
+pytestmark = pytest.mark.skipif(
+    not server_is_running(),
+    reason="Web server not running at localhost:5000"
+)
 
 
 class TestSimpleTiming:

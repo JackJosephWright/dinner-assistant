@@ -21,6 +21,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.step_modifier import (
+    modify_recipe_steps,
+    StepModificationResult,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -687,7 +692,46 @@ def create_variant(
         client=client,
     )
 
-    # 6. Build variant dict
+    # 6. Attempt step modification for protein swaps
+    original_steps = recipe.get('steps', [])
+    step_mod_result: Optional[StepModificationResult] = None
+
+    if original_steps and client:
+        try:
+            step_mod_result = modify_recipe_steps(
+                recipe_name=recipe_name,
+                steps=original_steps,
+                user_request=user_request,
+                patch_ops=[op.model_dump() for op in gen_result.ops],
+                original_ingredients=ingredients,
+                client=client,
+            )
+
+            if step_mod_result.success:
+                # Update compiled recipe with modified steps
+                compiled_recipe['steps'] = [
+                    s['text'] if isinstance(s, dict) else s
+                    for s in step_mod_result.modified_steps
+                ]
+
+                # Add step modification warnings
+                warnings.extend(step_mod_result.warnings)
+
+                logger.info(
+                    f"[VARIANT_CREATE] Step modification succeeded, "
+                    f"confidence={step_mod_result.confidence:.2f}"
+                )
+            elif step_mod_result.refused_reason:
+                # Add refusal to warnings
+                warnings.append(step_mod_result.refused_reason)
+                logger.info(
+                    f"[VARIANT_CREATE] Step modification refused: {step_mod_result.refused_reason}"
+                )
+        except Exception as e:
+            logger.error(f"[VARIANT_CREATE] Step modification failed: {e}")
+            warnings.append(f"Could not modify cooking instructions: {str(e)}")
+
+    # 7. Build variant dict
     variant = {
         'variant_id': variant_id,
         'base_recipe_id': recipe.get('id', 'unknown'),
@@ -695,8 +739,18 @@ def create_variant(
         'compiled_recipe': compiled_recipe,
         'warnings': warnings,
         'compiled_at': datetime.utcnow().isoformat() + 'Z',
-        'compiler_version': 'v0',
+        'compiler_version': 'v0.1',  # Bumped for step modification support
     }
+
+    # Add step modification metadata if present
+    if step_mod_result and step_mod_result.success and step_mod_result.step_modifications:
+        variant['original_steps'] = [
+            s['text'] if isinstance(s, dict) else s
+            for s in step_mod_result.original_steps
+        ]
+        variant['step_modifications'] = step_mod_result.step_modifications
+        variant['instruction_mod_confidence'] = step_mod_result.confidence
+        variant['instruction_mod_warnings'] = step_mod_result.warnings
 
     logger.info(f"[VARIANT_CREATE] Created variant {variant_id} with {len(gen_result.ops)} ops, {len(warnings)} warnings")
 

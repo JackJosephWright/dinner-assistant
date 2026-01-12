@@ -7,6 +7,7 @@ when the underlying meal plan is modified.
 
 import pytest
 from flask import session
+from unittest.mock import patch, MagicMock
 
 from src.web.app import app
 
@@ -33,7 +34,8 @@ class TestShoppingListInvalidation:
             sess['week_of'] = '2025-11-04'  # Monday
         return client
 
-    def test_swap_meal_clears_shopping_list_cache(self, authenticated_session):
+    @patch('src.web.app.assistant')
+    def test_swap_meal_clears_shopping_list_cache(self, mock_assistant, authenticated_session):
         """
         Test that swapping a meal invalidates cached shopping_list_id.
 
@@ -43,6 +45,17 @@ class TestShoppingListInvalidation:
         3. shopping_list_id should be removed from session
         4. Next visit to Shop tab should prompt regeneration
         """
+        # Mock successful swap
+        mock_assistant.planning_agent.swap_meal.return_value = {
+            "success": True,
+            "date": "2025-11-04",
+            "old_recipe": "Old Recipe",
+            "new_recipe": "New Recipe",
+            "new_recipe_id": "recipe_123",
+            "reason": "User requested change"
+        }
+        mock_assistant.db.get_snapshot.return_value = None  # No snapshot
+
         client = authenticated_session
 
         # Verify initial state
@@ -60,8 +73,7 @@ class TestShoppingListInvalidation:
         # Response should succeed
         assert response.status_code == 200
         result = response.get_json()
-        # Note: This might fail if no recipes match, but that's ok for this test
-        # We're testing the invalidation logic, not the swap logic
+        assert result.get('success') is True
 
         # Verify shopping_list_id was removed from session
         with client.session_transaction() as sess:
@@ -259,16 +271,28 @@ class TestEdgeCases:
             sess['meal_plan_id'] = 'mp_rapid_swap'
             sess['shopping_list_id'] = 'sl_initial'
 
-        # Perform multiple swaps rapidly
-        dates = ['2025-11-04', '2025-11-05', '2025-11-06']
-        for date in dates:
-            response = client.post('/api/swap-meal', json={
-                'meal_plan_id': 'mp_rapid_swap',
-                'date': date,
-                'requirements': 'swap for chicken'
-            })
-            # Each should succeed or fail gracefully
-            assert response.status_code in [200, 400, 500]
+        # Mock successful swap
+        with patch('src.web.app.assistant') as mock_assistant:
+            mock_assistant.planning_agent.swap_meal.return_value = {
+                "success": True,
+                "date": "2025-11-04",
+                "old_recipe": "Old Recipe",
+                "new_recipe": "New Recipe",
+                "new_recipe_id": "recipe_123",
+                "reason": "User requested change"
+            }
+            mock_assistant.db.get_snapshot.return_value = None
+
+            # Perform multiple swaps rapidly
+            dates = ['2025-11-04', '2025-11-05', '2025-11-06']
+            for date in dates:
+                response = client.post('/api/swap-meal', json={
+                    'meal_plan_id': 'mp_rapid_swap',
+                    'date': date,
+                    'requirements': 'swap for chicken'
+                })
+                # Each should succeed
+                assert response.status_code == 200
 
         # Final state: shopping_list_id should be cleared
         with client.session_transaction() as sess:

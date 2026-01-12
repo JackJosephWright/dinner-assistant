@@ -1,11 +1,29 @@
 #!/usr/bin/env python3
 """
 Test web app timing: clear plan, create new plan, measure tab load times.
+
+NOTE: This test requires a running server at localhost:5000.
+It will be skipped if the server is not available.
 """
 
+import pytest
+import requests
 from playwright.sync_api import sync_playwright
 import time
 
+BASE_URL = "http://127.0.0.1:5000"
+
+
+def server_is_running():
+    """Check if the web server is running."""
+    try:
+        response = requests.get(f"{BASE_URL}/api/health", timeout=2)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+@pytest.mark.skipif(not server_is_running(), reason="Web server not running at localhost:5000")
 def test_webapp_timing():
     """Test meal planning workflow and measure tab load times."""
 

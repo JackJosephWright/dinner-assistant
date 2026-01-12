@@ -231,6 +231,24 @@ class DatabaseInterface:
                 )
             """)
 
+            # User favorites table (explicit starred recipes)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_favorites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    recipe_id TEXT NOT NULL,
+                    recipe_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, recipe_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_favorites_user
+                ON user_favorites(user_id)
+            """)
+
             conn.commit()
             logger.info("User database initialized")
 
@@ -1550,6 +1568,143 @@ class DatabaseInterface:
                 for row in rows
             ]
 
+    # =========================================================================
+    # Favorites Management (explicit starred recipes)
+    # =========================================================================
+
+    def add_favorite(self, user_id: int, recipe_id: str, recipe_name: str) -> bool:
+        """
+        Star a recipe as a favorite.
+
+        Args:
+            user_id: User ID
+            recipe_id: Recipe ID to star
+            recipe_name: Recipe name (cached for display)
+
+        Returns:
+            True if added, False if already exists
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO user_favorites (user_id, recipe_id, recipe_name, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (user_id, recipe_id, recipe_name, datetime.now().isoformat()),
+                )
+                conn.commit()
+                logger.info(f"Added favorite: {recipe_name} (user={user_id})")
+                return True
+            except sqlite3.IntegrityError:
+                # Already exists
+                return False
+
+    def remove_favorite(self, user_id: int, recipe_id: str) -> bool:
+        """
+        Remove a recipe from favorites.
+
+        Args:
+            user_id: User ID
+            recipe_id: Recipe ID to unstar
+
+        Returns:
+            True if removed, False if not found
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM user_favorites
+                WHERE user_id = ? AND recipe_id = ?
+                """,
+                (user_id, recipe_id),
+            )
+            conn.commit()
+            removed = cursor.rowcount > 0
+            if removed:
+                logger.info(f"Removed favorite: {recipe_id} (user={user_id})")
+            return removed
+
+    def is_favorite(self, user_id: int, recipe_id: str) -> bool:
+        """
+        Check if a recipe is explicitly starred.
+
+        Args:
+            user_id: User ID
+            recipe_id: Recipe ID to check
+
+        Returns:
+            True if starred, False otherwise
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT 1 FROM user_favorites
+                WHERE user_id = ? AND recipe_id = ?
+                """,
+                (user_id, recipe_id),
+            )
+            return cursor.fetchone() is not None
+
+    def get_combined_favorites(self, user_id: int = 1, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get all favorites: explicit stars + auto-learned from high ratings.
+
+        Auto-learned criteria: rating = 5 AND would_make_again = true
+
+        Args:
+            user_id: User ID
+            limit: Maximum number to return
+
+        Returns:
+            List of {"recipe_id", "recipe_name", "source": "starred"|"learned",
+                     "avg_rating": float|None, "times_cooked": int}
+        """
+        with sqlite3.connect(self.user_db) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # UNION of explicit starred + auto-learned from 5-star ratings
+            # Starred recipes come first (ORDER BY source ASC puts 'starred' before 'learned')
+            cursor.execute(
+                """
+                SELECT recipe_id, recipe_name, 'starred' as source,
+                       NULL as avg_rating, 0 as times_cooked
+                FROM user_favorites
+                WHERE user_id = ?
+
+                UNION
+
+                SELECT recipe_id, recipe_name, 'learned' as source,
+                       AVG(user_rating) as avg_rating, COUNT(*) as times_cooked
+                FROM meal_events
+                WHERE user_id = ?
+                  AND user_rating = 5
+                  AND would_make_again = 1
+                  AND recipe_id NOT IN (SELECT recipe_id FROM user_favorites WHERE user_id = ?)
+                GROUP BY recipe_id
+
+                ORDER BY source ASC, avg_rating DESC, times_cooked DESC
+                LIMIT ?
+                """,
+                (user_id, user_id, user_id, limit),
+            )
+            rows = cursor.fetchall()
+
+            return [
+                {
+                    "recipe_id": row["recipe_id"],
+                    "recipe_name": row["recipe_name"],
+                    "source": row["source"],
+                    "avg_rating": row["avg_rating"],
+                    "times_cooked": row["times_cooked"],
+                }
+                for row in rows
+            ]
+
     def get_recent_meals(self, user_id: int = 1, days_back: int = 14) -> List[MealEvent]:
         """
         Get meals from the past N days for variety enforcement.
@@ -1980,6 +2135,72 @@ class DatabaseInterface:
                 return json.loads(row['snapshot_json'])
 
         return None
+
+    def swap_meal_in_snapshot(
+        self, snapshot_id: str, date: str, new_recipe_id: str, user_id: int = 1
+    ) -> Optional[Dict]:
+        """
+        Swap a meal in an existing snapshot.
+
+        This updates the snapshot's planned_meals array with the new recipe,
+        which is the proper way to modify meals in the snapshot-only architecture.
+
+        Args:
+            snapshot_id: Snapshot ID
+            date: Date of meal to swap (YYYY-MM-DD)
+            new_recipe_id: New recipe ID
+            user_id: User ID (for logging)
+
+        Returns:
+            Updated snapshot dictionary or None if failed
+        """
+        # Get the snapshot
+        snapshot = self.get_snapshot(snapshot_id)
+        if not snapshot:
+            logger.warning(f"Snapshot {snapshot_id} not found")
+            return None
+
+        # Get the new recipe
+        new_recipe = self.get_recipe(new_recipe_id)
+        if not new_recipe:
+            logger.warning(f"Recipe {new_recipe_id} not found")
+            return None
+
+        # Find and update the meal in planned_meals
+        planned_meals = snapshot.get('planned_meals', [])
+        old_recipe_name = None
+        meal_found = False
+
+        for meal in planned_meals:
+            if meal.get('date') == date:
+                meal_found = True
+                old_recipe_name = meal.get('recipe', {}).get('name', 'Unknown')
+
+                # Update the recipe in the meal
+                meal['recipe'] = new_recipe.to_dict()
+                meal['recipe_id'] = new_recipe.id
+
+                # Clear any variant since we're replacing the entire recipe
+                if 'variant' in meal:
+                    del meal['variant']
+
+                break
+
+        if not meal_found:
+            logger.warning(f"No meal found for date {date} in snapshot {snapshot_id}")
+            return None
+
+        # Update the snapshot
+        snapshot['planned_meals'] = planned_meals
+        snapshot['updated_at'] = datetime.now().isoformat()
+
+        # Save the updated snapshot
+        self.save_snapshot(snapshot)
+
+        logger.info(f"Swapped meal on {date} in snapshot {snapshot_id}: "
+                   f"'{old_recipe_name}' -> '{new_recipe.name}'")
+
+        return snapshot
 
     def get_user_snapshots(self, user_id: int, limit: int = 10) -> List[Dict]:
         """

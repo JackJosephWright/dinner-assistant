@@ -139,10 +139,13 @@ class MealPlanningChatbot:
 
     def get_system_prompt(self) -> str:
         """Get system prompt for the LLM."""
+        # Get selected_dates if set by UI
+        selected_dates = getattr(self, 'selected_dates', None)
         return build_system_prompt(
             current_meal_plan_id=self.current_meal_plan_id,
             current_shopping_list_id=self.current_shopping_list_id,
             last_meal_plan=self.last_meal_plan,
+            selected_dates=selected_dates,
         )
 
     def get_tools(self) -> List[Dict[str, Any]]:
@@ -167,7 +170,7 @@ class MealPlanningChatbot:
         # Call Claude with tools
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
-            max_tokens=512,  # Reduced from 4096 for faster, more concise responses
+            max_tokens=2048,  # Increased to prevent truncation causing duplicate tool calls
             system=self.get_system_prompt(),
             tools=self.get_tools(),
             messages=self.conversation_history,
@@ -236,7 +239,7 @@ class MealPlanningChatbot:
             # Get next response
             response = self.client.messages.create(
                 model="claude-sonnet-4-5-20250929",
-                max_tokens=512,  # Reduced from 4096 for faster, more concise responses
+                max_tokens=2048,  # Increased to prevent truncation causing duplicate tool calls
                 system=self.get_system_prompt(),
                 tools=self.get_tools(),
                 messages=self.conversation_history,

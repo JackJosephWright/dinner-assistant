@@ -346,6 +346,10 @@ async function loadRecipe(recipeId) {
                 cuisine: recipeData.cuisine,
                 difficulty: recipeData.difficulty,
                 warnings: recipeData.warnings || [],  // Phase 2: Pass variant warnings
+                // Phase 3: Step modifications
+                step_modifications: recipeData.step_modifications || [],
+                original_steps: recipeData.original_steps || [],
+                instruction_mod_confidence: recipeData.instruction_mod_confidence,
             });
             recipeDetails.classList.remove('hidden');
             loading.classList.add('hidden');
@@ -375,6 +379,17 @@ async function loadRecipe(recipeId) {
 function displayRecipe(data) {
     const container = document.getElementById('recipeDetails');
 
+    // Build step modification lookup
+    const stepMods = {};
+    if (data.step_modifications && data.step_modifications.length > 0) {
+        data.step_modifications.forEach(mod => {
+            // Match by step_id or by index
+            if (mod.step_id) {
+                stepMods[mod.step_id] = mod;
+            }
+        });
+    }
+
     // Format ingredients and steps
     const ingredientsList = data.ingredients.map(ing => `
         <li class="flex items-start py-2 border-b border-gray-100 last:border-0">
@@ -383,16 +398,59 @@ function displayRecipe(data) {
         </li>
     `).join('');
 
-    const stepsList = data.steps.map((step, i) => `
-        <div class="flex mb-6 last:mb-0">
-            <div class="flex-shrink-0 w-10 h-10 bg-orange-600 text-white rounded-full flex items-center justify-center font-bold text-lg">
-                ${i + 1}
+    const hasModifications = data.step_modifications && data.step_modifications.length > 0;
+
+    const stepsList = data.steps.map((step, i) => {
+        // Check if this step was modified (by looking at step_modifications)
+        const modification = data.step_modifications ? data.step_modifications.find(m => {
+            // Try to match by step_id pattern (s{index}_...)
+            if (m.step_id && m.step_id.startsWith(`s${i}_`)) return true;
+            return false;
+        }) : null;
+
+        const isModified = modification !== null;
+        const stepText = typeof step === 'object' ? step.text : step;
+        const originalText = modification ? modification.original_text : null;
+        const reason = modification ? modification.reason : null;
+
+        if (isModified) {
+            return `
+                <div class="flex mb-6 last:mb-0">
+                    <div class="flex-shrink-0 w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-lg relative">
+                        ${i + 1}
+                        <span class="absolute -top-1 -right-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center">
+                            <i class="fas fa-pencil-alt text-white text-xs"></i>
+                        </span>
+                    </div>
+                    <div class="ml-4 flex-1">
+                        <p class="text-gray-800 leading-relaxed">${stepText}</p>
+                        <div class="mt-2 text-sm">
+                            <button onclick="toggleStepDiff(${i})" class="text-blue-600 hover:text-blue-800 font-medium">
+                                <i class="fas fa-exchange-alt mr-1"></i> Show original
+                            </button>
+                            ${reason ? `<span class="ml-2 text-gray-500 italic">(${reason})</span>` : ''}
+                        </div>
+                        <div id="stepDiff${i}" class="hidden mt-2 p-3 bg-gray-100 rounded-lg border-l-4 border-gray-400">
+                            <p class="text-sm text-gray-600">
+                                <span class="font-medium">Original:</span> <span class="line-through">${originalText || 'N/A'}</span>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="flex mb-6 last:mb-0">
+                <div class="flex-shrink-0 w-10 h-10 bg-orange-600 text-white rounded-full flex items-center justify-center font-bold text-lg">
+                    ${i + 1}
+                </div>
+                <div class="ml-4 flex-1">
+                    <p class="text-gray-800 leading-relaxed">${stepText}</p>
+                </div>
             </div>
-            <div class="ml-4 flex-1">
-                <p class="text-gray-800 leading-relaxed">${step}</p>
-            </div>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 
     // Build warnings section if present
     const warningsSection = data.warnings && data.warnings.length > 0 ? `
@@ -678,6 +736,14 @@ function toggleWarnings() {
     if (content && chevron) {
         content.classList.toggle('hidden');
         chevron.classList.toggle('rotate-180');
+    }
+}
+
+// Toggle Step Diff (Phase 3 - Instruction Modifications)
+function toggleStepDiff(stepIndex) {
+    const diff = document.getElementById(`stepDiff${stepIndex}`);
+    if (diff) {
+        diff.classList.toggle('hidden');
     }
 }
 

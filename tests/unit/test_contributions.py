@@ -3,7 +3,26 @@
 Test script for incremental shopping list contribution tracking.
 """
 
+import pytest
 from src.data.models import IngredientContribution, GroceryItem
+
+
+@pytest.fixture
+def item():
+    """Create an item with contributions for testing."""
+    item = GroceryItem(
+        name="Chicken Breast",
+        quantity="0 lbs",
+        category="meat",
+        recipe_sources=[],
+        contributions=[]
+    )
+    # Add contributions
+    item.add_contribution("Grilled Chicken", "2 lbs", "lbs", 2.0)
+    item.add_contribution("Stir Fry", "1 lbs", "lbs", 1.0)
+    item.add_contribution("User", "1.5 lbs", "lbs", 1.5)
+    return item
+
 
 def test_add_contributions():
     """Test adding contributions to an item."""

@@ -271,5 +271,191 @@ def test_snapshot_preserves_nested_structures(db):
     assert nested_value == "value"
 
 
+@pytest.mark.skipif(
+    not os.path.exists('recipes.db') and not os.path.exists('recipes_dev.db'),
+    reason="Requires recipes database"
+)
+def test_swap_meal_in_snapshot(db):
+    """Test that swap_meal_in_snapshot updates the correct meal in the snapshot."""
+    # Create a snapshot with two meals
+    snapshot = {
+        "id": "mp_test_swap_meal",
+        "user_id": 1,
+        "week_of": "2025-11-24",
+        "version": 1,
+        "planned_meals": [
+            {
+                "date": "2025-11-24",
+                "meal_type": "dinner",
+                "recipe": {
+                    "id": "recipe_old",
+                    "name": "Old Recipe",
+                    "description": "Old description",
+                    "ingredients_raw": ["old ingredient"],
+                    "steps": ["old step"],
+                    "tags": [],
+                },
+                "servings": 4,
+            },
+            {
+                "date": "2025-11-25",
+                "meal_type": "dinner",
+                "recipe": {
+                    "id": "recipe_other",
+                    "name": "Other Recipe",
+                    "description": "Other description",
+                    "ingredients_raw": ["other ingredient"],
+                    "steps": ["other step"],
+                    "tags": [],
+                },
+                "servings": 4,
+            },
+        ],
+        "grocery_list": None,
+    }
+    db.save_snapshot(snapshot)
+
+    # Get a recipe from the actual database (need recipes.db)
+    try:
+        recipes = db.search_recipes("chicken", limit=1)
+        if not recipes:
+            pytest.skip("No recipes in database to swap")
+    except Exception:
+        pytest.skip("Recipes database not available")
+
+    new_recipe = recipes[0]
+
+    # Swap the meal on 2025-11-24
+    result = db.swap_meal_in_snapshot(
+        snapshot_id="mp_test_swap_meal",
+        date="2025-11-24",
+        new_recipe_id=new_recipe.id,
+        user_id=1,
+    )
+
+    assert result is not None
+    assert result['id'] == "mp_test_swap_meal"
+
+    # Reload and verify
+    loaded = db.get_snapshot("mp_test_swap_meal")
+
+    # First meal should be swapped
+    meal_24 = next(m for m in loaded['planned_meals'] if m['date'] == '2025-11-24')
+    assert meal_24['recipe']['id'] == new_recipe.id
+    assert meal_24['recipe']['name'] == new_recipe.name
+
+    # Second meal should be unchanged
+    meal_25 = next(m for m in loaded['planned_meals'] if m['date'] == '2025-11-25')
+    assert meal_25['recipe']['id'] == "recipe_other"
+    assert meal_25['recipe']['name'] == "Other Recipe"
+
+
+@pytest.mark.skipif(
+    not os.path.exists('recipes.db') and not os.path.exists('recipes_dev.db'),
+    reason="Requires recipes database"
+)
+def test_swap_meal_in_snapshot_clears_variant(db):
+    """Test that swap_meal_in_snapshot clears any existing variant."""
+    # Create a snapshot with a meal that has a variant
+    snapshot = {
+        "id": "mp_test_swap_variant",
+        "user_id": 1,
+        "week_of": "2025-11-24",
+        "version": 1,
+        "planned_meals": [
+            {
+                "date": "2025-11-24",
+                "meal_type": "dinner",
+                "recipe": {
+                    "id": "recipe_with_variant",
+                    "name": "Recipe With Variant",
+                },
+                "servings": 4,
+                "variant": {
+                    "variant_id": "variant:mp_test:2025-11-24:dinner",
+                    "compiled_recipe": {"name": "Modified Recipe"},
+                    "patch_ops": [{"op": "replace_ingredient"}],
+                },
+            },
+        ],
+        "grocery_list": None,
+    }
+    db.save_snapshot(snapshot)
+
+    # Get a recipe to swap in
+    try:
+        recipes = db.search_recipes("beef", limit=1)
+        if not recipes:
+            pytest.skip("No recipes in database to swap")
+    except Exception:
+        pytest.skip("Recipes database not available")
+
+    new_recipe = recipes[0]
+
+    # Swap the meal
+    result = db.swap_meal_in_snapshot(
+        snapshot_id="mp_test_swap_variant",
+        date="2025-11-24",
+        new_recipe_id=new_recipe.id,
+        user_id=1,
+    )
+
+    assert result is not None
+
+    # Reload and verify variant is gone
+    loaded = db.get_snapshot("mp_test_swap_variant")
+    meal = loaded['planned_meals'][0]
+
+    assert 'variant' not in meal or meal.get('variant') is None
+    assert meal['recipe']['id'] == new_recipe.id
+
+
+def test_swap_meal_in_snapshot_nonexistent_snapshot(db):
+    """Test that swap_meal_in_snapshot returns None for nonexistent snapshot."""
+    result = db.swap_meal_in_snapshot(
+        snapshot_id="nonexistent_snapshot",
+        date="2025-11-24",
+        new_recipe_id="some_recipe",
+        user_id=1,
+    )
+
+    assert result is None
+
+
+def test_swap_meal_in_snapshot_nonexistent_recipe(db):
+    """Test that swap_meal_in_snapshot returns None for nonexistent recipe."""
+    # Create a snapshot
+    snapshot = {
+        "id": "mp_test_swap_norecipe",
+        "user_id": 1,
+        "week_of": "2025-11-24",
+        "version": 1,
+        "planned_meals": [
+            {
+                "date": "2025-11-24",
+                "meal_type": "dinner",
+                "recipe": {"id": "recipe1", "name": "Recipe 1"},
+                "servings": 4,
+            },
+        ],
+        "grocery_list": None,
+    }
+    db.save_snapshot(snapshot)
+
+    # Try to swap with a nonexistent recipe
+    try:
+        result = db.swap_meal_in_snapshot(
+            snapshot_id="mp_test_swap_norecipe",
+            date="2025-11-24",
+            new_recipe_id="nonexistent_recipe_xyz",
+            user_id=1,
+        )
+        # Should return None because recipe doesn't exist
+        assert result is None
+    except Exception:
+        # If recipes table doesn't exist, skip this test
+        pytest.skip("Recipes database not available")
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

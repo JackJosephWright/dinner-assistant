@@ -23,6 +23,10 @@ from chatbot_modules.tool_handlers import (
     handle_get_day_ingredients,
     handle_modify_recipe,
     handle_clear_recipe_modifications,
+    # Favorites
+    handle_show_favorites,
+    handle_add_favorite,
+    handle_remove_favorite,
 )
 
 # Central registry mapping tool names to handler functions
@@ -44,6 +48,10 @@ TOOL_HANDLERS = {
     "get_day_ingredients": handle_get_day_ingredients,
     "modify_recipe": handle_modify_recipe,
     "clear_recipe_modifications": handle_clear_recipe_modifications,
+    # Favorites
+    "show_favorites": handle_show_favorites,
+    "add_favorite": handle_add_favorite,
+    "remove_favorite": handle_remove_favorite,
 }
 
 

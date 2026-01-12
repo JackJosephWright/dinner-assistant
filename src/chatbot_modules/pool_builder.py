@@ -129,3 +129,98 @@ def build_per_day_pools(
     logger.info(f"[POOL-BUILD] Complete: {total_candidates} total candidates across {len(day_requirements)} days")
 
     return candidates_by_date, timing_by_date
+
+
+def build_per_day_pools_v2(
+    db,
+    query_params_by_date: Dict[str, Dict],
+    recent_names: List[str] = None,
+    exclude_allergens: List[str] = None,
+    user_id: str = None,
+    week_of: str = None,
+    verbose: bool = False,
+    verbose_callback: Optional[Callable[[str], None]] = None,
+) -> Tuple[Dict[str, List], Dict[str, float]]:
+    """
+    Build candidate pools using LLM-generated query parameters.
+
+    Simplified version - no DayRequirement parsing, takes DB params directly.
+    Used with llm_build_query_params() for robust natural language handling.
+
+    Args:
+        db: DatabaseInterface instance
+        query_params_by_date: Dict mapping date -> {include_tags, query}
+        recent_names: Recently used recipe names (for freshness penalty)
+        exclude_allergens: Allergens to filter out
+        user_id: User identifier for seed generation
+        week_of: Week start date for seed generation
+        verbose: Enable verbose output
+        verbose_callback: Callback for verbose output
+
+    Returns:
+        Tuple of (candidates_by_date dict, timing_by_date dict)
+    """
+    candidates_by_date: Dict[str, List] = {}
+    timing_by_date: Dict[str, float] = {}
+
+    # Generate stable seed for this user + week
+    seed_base = hash(f"{user_id or 'default'}_{week_of or 'unknown'}") % (2**31)
+
+    logger.info(f"[POOL-BUILD-V2] Starting pool construction (POOL_SIZE={POOL_SIZE}, seed_base={seed_base})")
+
+    exclude_tags = list(CANON_COURSE_EXCLUDE)
+
+    for day_idx, (date, params) in enumerate(query_params_by_date.items()):
+        pool_start = time.time()
+
+        include_tags = params.get("include_tags", ["main-dish"])
+        query = params.get("query")
+
+        # Ensure main-dish is always included
+        if "main-dish" not in include_tags:
+            include_tags = ["main-dish"] + list(include_tags)
+
+        # Per-day seed variation
+        day_seed = seed_base + day_idx
+
+        logger.info(f"[POOL-BUILD-V2] {date}: include_tags={include_tags}, query={query}")
+
+        pool = db.search_recipes_sampled(
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            query=query,
+            limit=POOL_SIZE,
+            seed=day_seed,
+        )
+
+        # Allergen filtering
+        if exclude_allergens and pool:
+            original_count = len(pool)
+            pool = [
+                r for r in pool
+                if r.has_structured_ingredients()
+                and not any(r.has_allergen(a) for a in exclude_allergens)
+            ]
+            if len(pool) < original_count:
+                logger.info(f"[POOL-BUILD-V2] {date}: filtered {original_count - len(pool)} allergen matches")
+
+        # Freshness penalty
+        if recent_names and pool:
+            recent_set = set(recent_names)
+            fresh = [r for r in pool if r.name not in recent_set]
+            stale = [r for r in pool if r.name in recent_set]
+            pool = fresh + stale
+
+        candidates_by_date[date] = pool
+        pool_time = time.time() - pool_start
+        timing_by_date[date] = pool_time
+
+        if verbose and verbose_callback:
+            tags_str = ", ".join(include_tags)
+            query_str = f", query='{query}'" if query else ""
+            verbose_callback(f"      → {date}: {len(pool)} candidates ({tags_str}{query_str})")
+
+    total_candidates = sum(len(p) for p in candidates_by_date.values())
+    logger.info(f"[POOL-BUILD-V2] Complete: {total_candidates} total candidates across {len(query_params_by_date)} days")
+
+    return candidates_by_date, timing_by_date

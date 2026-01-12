@@ -784,7 +784,8 @@ class GroceryItem:
             return
 
         # Sum amounts (assuming same unit for now - will add conversion later)
-        total_amount = sum(c.amount for c in self.contributions)
+        # Handle None amounts by treating them as 0
+        total_amount = sum(c.amount or 0 for c in self.contributions)
         unit = self.contributions[0].unit if self.contributions else ""
 
         # Format display string
